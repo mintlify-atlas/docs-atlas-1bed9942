@@ -1,7 +1,7 @@
 ---
-title: "Pyren: HP OMEN Gaming Hub for Linux"
+title: "Pyren: HP OMEN Gaming Hub for Linux – Introduction"
 sidebarTitle: "Introduction"
-description: "Pyren is an open-source Linux app replicating HP's OMEN Gaming Hub, with fan control, RGB lighting, power profiles, and GPU overclocking via a privilege-separated daemon architecture."
+description: "Pyren brings HP's OMEN Gaming Hub to Linux with fan control, RGB lighting, power profiles, and GPU overclocking via a privilege-separated Rust daemon."
 ---
 
 Pyren is an open-source Linux desktop application that brings the HP OMEN Gaming Hub experience to Linux. HP's official OMEN Gaming Hub is a Windows-only application — Pyren fills that gap by delivering the same hardware controls, from fan management and RGB lighting to power profiles and GPU overclocking, through a native Linux app built on Tauri and SvelteKit. The project was derived from [`omen-fan-control`](https://github.com/arfelious/omen-fan-control) (patched Linux driver, reverse ventilation logic) and [`omen-rgb-linux`](https://github.com/arfelious/omen-rgb-linux) for RGB control, then extended with a full desktop UI and daemon architecture.
@@ -45,7 +45,7 @@ The Unix socket is the trust boundary. The daemon binds it `0660` to the `pyren`
     Full keyboard RGB control with a lighting-effects engine (breathing, spectrum, rainbowWave, wave, fade), power-on/off colour sweeps, brightness control, and up to 15 saved lighting configurations.
   </Card>
   <Card title="GPU Overclocking" icon="microchip">
-    Memory and core clock offsets applied via NVML (works on Wayland, no Coolbits required). Changes are stepped in 15 MHz increments and automatically reverted if not confirmed, with a watchdog that also catches driver-reported faults.
+    Memory and core clock offsets applied via NVML (works on Wayland, no Coolbits required). Changes are applied in small increments and automatically reverted if not confirmed, with a watchdog that also catches driver-reported faults.
   </Card>
   <Card title="System Monitor" icon="chart-line">
     Temperatures (CPU, GPUs, chassis), usage %, RAM, disk, network, and top processes. An advanced mode adds per-core CPU/GPU monitoring with small graphs for each metric.
@@ -104,7 +104,7 @@ Two notable exceptions are recorded in [`NOTICE`](https://github.com/mglourido/P
   <Card title="Hardware Compatibility" icon="laptop" href="/hardware-compatibility">
     Run pyren-check to discover which features your HP OMEN or Victus laptop supports before and after install.
   </Card>
-  <Card title="Features" icon="star" href="/features">
+  <Card title="Features" icon="star" href="/features/power-profiles">
     Detailed breakdown of every hardware control, app capability, and configuration option.
   </Card>
   <Card title="IPC Reference" icon="code" href="/ipc/overview">

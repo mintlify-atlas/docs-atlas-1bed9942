@@ -1,7 +1,7 @@
 ---
 title: "IPC Error Kinds: Handling Daemon Refusals in Pyren"
 sidebarTitle: "Error Kinds"
-description: "Pyren's daemon returns structured errors with a kind field. Branch on kind, show message. Covers unknownModule, unsupported, notCapable, permissionDenied, io, busy, and more."
+description: "Pyren daemon returns structured errors with a stable kind field. Reference for all 11 error kinds, pyren-ctl exit codes, and caller handling guidance."
 ---
 
 When the daemon refuses a request it returns an `error` object with a `kind` field drawn from a closed set of named values. **Branch on `kind` to decide what to do; show `message` to the user.** The `message` text is written for a person and gets reworded between releases — anything that pattern-matches on the prose will break the next time someone improves a sentence. `kind` is the stable contract.

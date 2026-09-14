@@ -1,7 +1,7 @@
 ---
-title: "Pyren IPC Protocol: JSON-RPC over Unix Socket"
+title: "Pyren Daemon IPC Protocol: JSON-RPC over Unix Socket"
 sidebarTitle: "Overview"
-description: "Pyren's daemon communicates via a newline-delimited JSON-RPC-like protocol over a Unix domain socket. One request line, one response line, sequential per connection."
+description: "Pyren's daemon uses newline-delimited JSON-RPC over a Unix domain socket. Learn request, response, and Msg formats plus access control and socket paths."
 ---
 
 Pyren's privileged daemon and its clients — the Tauri desktop app, `pyren-ctl`, the widget, and any script you write — communicate over a Unix domain socket (`SOCK_STREAM`) using a compact JSON-RPC-like wire format. Every message is a single JSON object terminated by a newline (`\n`). A client sends one request line, reads one response line, and may then send another; the daemon handles requests sequentially on each connection and spawns one thread per connection. No length prefix, no batching, no out-of-order replies: one request in, one response out, always.

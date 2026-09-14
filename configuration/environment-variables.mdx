@@ -1,5 +1,5 @@
 ---
-title: "Pyren Environment Variable Reference"
+title: "Pyren Environment Variables: Sockets, Logs, and Fixtures"
 sidebarTitle: "Environment Variables"
 description: "Configure Pyren's runtime behavior using environment variables for socket paths, group ownership, log levels, hardware paths, and development fixtures."
 ---
@@ -25,7 +25,7 @@ Pyren's daemon and CLI tools honor a set of environment variables for overriding
 These variables redirect the daemon and `pyren-check` away from real hardware paths and toward fixture directories. Both the Rust daemon and the `tools/pyren-check.sh` shell script honor all of them, and `daemon/check/tests/parity.rs` runs both implementations against the same fixtures to verify they stay in sync.
 
 | Variable | Stands in for |
-|----------|--------------|
+|----------|--------------| 
 | `PYREN_HWMON_DIR` | The `hp-wmi` hwmon sysfs node (the directory containing `fan1_input`, `pwm1`, `pwm1_enable`, etc.) |
 | `PYREN_USB_DEVICES` | `/sys/bus/usb/devices` — used by the per-key keyboard probe to detect OMEN RGB hardware by USB vendor/product ID |
 | `PYREN_ACPI_CALL` | `/proc/acpi/call` — used by the lightbar probe; pointing this at a plain file lets the lightbar code path be exercised on any machine, even without `acpi_call` loaded |

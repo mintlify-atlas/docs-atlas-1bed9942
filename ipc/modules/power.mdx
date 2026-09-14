@@ -1,7 +1,7 @@
 ---
 title: "power Module: Profiles, Tuning, and Auto-Switching"
 sidebarTitle: "power"
-description: "The power module manages Eco/Balanced/Performance/Unlimited profiles, per-mode power envelope tuning, OS profile integration, and the background auto-switching supervisor."
+description: "The power module handles four power profiles, per-mode power envelope tuning, OS profile integration, and a background auto-switching supervisor."
 ---
 
 The `power` module drives the laptop's firmware profile, optionally the OS power manager, and optionally the CPU power envelope. It is the control surface behind the four-mode switch that defines OMEN Gaming Hub's primary UI, extended with per-mode tuning, a background supervisor that reacts to plugging/unplugging and load, and a persistence layer so the supervisor keeps running between reboots. The module works on any machine with at least one supported mechanism — ACPI platform profile, power-profiles-daemon, or per-CPU EPP hints.
@@ -25,7 +25,7 @@ Every mode drives up to three independent mechanisms. They are separate because 
 
 | Part | Mechanism | Applied |
 |---|---|---|
-| The laptop's own profile | ACPI `platform_profile` | Always, when the hardware supports it |
+| The laptop's own profile | ACPI `platform_profile` | Always |
 | The OS profile | power-profiles-daemon / TLP / auto-cpufreq | Only when `applyToOsProfile` is `true` — **off by default** |
 | The power envelope | powercap PL1 / PL2 + turbo | Only when a tuning entry has been set for this mode |
 

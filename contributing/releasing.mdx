@@ -1,7 +1,7 @@
 ---
-title: "Cut a Pyren Release with release.sh"
+title: "Cutting a Pyren Release: Version, Build, and Publish"
 sidebarTitle: "Releasing"
-description: "Bump the version, update the changelog, build the release tarball with tools/release.sh, verify on a clean machine, then tag and publish to GitHub Releases."
+description: "Bump the version in five manifests, update the changelog, build with tools/release.sh, verify on a clean machine, then tag and publish to GitHub Releases."
 ---
 
 Pyren releases are built locally with `tools/release.sh`. There is no release CI — releases happen rarely, they need a machine that can already build every part of the project, and a script means the person cutting the release watches it happen rather than reading a log after the fact. The whole process from version bump to published draft takes one sitting.
@@ -16,7 +16,7 @@ The first release build compiles approximately 490 crates — the Tauri shell, W
 
 <Steps>
   <Step title="Bump the version in all five manifests">
-    The version lives in five places. `tools/bump-version.sh` updates all of them atomically and refreshes the three `Cargo.lock` files:
+    The version lives in five places: `daemon/Cargo.toml`, `osd/Cargo.toml`, `app/src-tauri/Cargo.toml`, `app/package.json`, and `app/src-tauri/tauri.conf.json`. `tools/bump-version.sh` updates all of them atomically and refreshes the three `Cargo.lock` files:
 
     ```sh
     tools/bump-version.sh 0.2.0
@@ -72,8 +72,10 @@ The first release build compiles approximately 490 crates — the Tauri shell, W
     cd pyren-0.2.0
     sudo ./install.sh
     newgrp pyren
-    pyren-check
-    pyren-ctl status
+    systemctl is-enabled pyren-daemon    # -> enabled
+    pyren-check                          # the compatibility verdict
+    pyren-ctl status                     # the daemon answers
+    pyren                                # the app opens
     sudo ./uninstall.sh
     ```
 

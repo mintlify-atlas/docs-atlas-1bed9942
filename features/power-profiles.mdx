@@ -1,7 +1,7 @@
 ---
-title: "Power Profiles and Automatic Switching in Pyren"
+title: "Power Profiles and Automatic Mode Switching in Pyren"
 sidebarTitle: "Power Profiles"
-description: "Switch between Eco, Balanced, Performance, and Unlimited power profiles manually or automatically per power source, with optional OS power manager integration."
+description: "Switch between Eco, Balanced, Performance, and Unlimited profiles manually or automatically per power source, with optional OS power manager integration."
 ---
 
 Pyren exposes four power profiles — **Eco**, **Balanced**, **Performance**, and **Unlimited** — that each drive up to three independent hardware mechanisms: the laptop's own ACPI firmware profile (which changes the embedded controller's fan curve and internal power states), an optional OS power manager profile (power-profiles-daemon, TLP, or auto-cpufreq), and an optional per-mode power envelope (PL1/PL2 limits and turbo). These three mechanisms are distinct owners and are configured separately. The firmware profile is the most impactful because it is the only path that reaches EC-level behavior — PCIe link power, thermal thresholds — that no userspace knob touches directly.

@@ -1,7 +1,7 @@
 ---
-title: "Quick-Access OSD Widget and Hotkey in Pyren"
+title: "Quick-Access OSD Widget and Hotkey Binding in Pyren"
 sidebarTitle: "OSD Widget"
-description: "Pyren's GTK layer-shell overlay widget lets you switch power profiles and fan modes instantly with a configurable keyboard shortcut, without opening the main app."
+description: "Pyren's GTK overlay widget lets you switch power profiles and fan modes with a keyboard shortcut, without opening the main app. Fan controls are opt-in."
 ---
 
 Pyren's OSD widget (`pyren-osd`) is a GTK layer-shell overlay that floats above every other window and shows the current power profile. You press your chosen keyboard shortcut to bring it up, click a profile to switch, and press the shortcut again to dismiss it — all without opening the main application. The daemon's supervisor continues making automatic-switching decisions at all times; the widget is simply a fast path for manual overrides.
@@ -64,6 +64,10 @@ The widget process (`pyren-osd`) connects to the daemon over the Unix socket and
 
 ## Key remapper
 
-Pyren includes a `keymap` module that remaps physical keys system-wide via `/dev/uinput`. This is independent of the OSD hotkey binding — it covers use cases like reassigning keys to different keycodes or creating macros.
+Pyren includes a `keymap` module that remaps physical keys system-wide via `/dev/uinput`. This is independent of the OSD hotkey binding — it covers use cases like reassigning one key to a different keycode. Only plain keycode substitution is supported; chords and macros are not implemented.
 
 Enable the key remapper in **Settings** after configuring your mappings. The remapper is a separate module from the hotkey listener and does not interfere with the widget shortcut.
+
+<Note>
+Enabling a mapping on the same keyboard the hotkey listens on will silence the hotkey listener on that device while the remapper runs (`EVIOCGRAB` gives the remapper exclusive access). Enable key remapping deliberately, after a mapping is configured, rather than at daemon startup.
+</Note>

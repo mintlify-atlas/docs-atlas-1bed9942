@@ -1,7 +1,7 @@
 ---
-title: "System Monitor: CPU, GPU, RAM and Process Stats"
+title: "System Monitor: Live CPU, GPU, RAM, and Process Stats"
 sidebarTitle: "System Monitor"
-description: "Pyren's system monitor shows live CPU, GPU, RAM, disk, network, temperatures, and top processes. Advanced mode adds per-core and per-GPU metrics with mini graphs."
+description: "Pyren's system monitor shows live CPU, GPU, RAM, disk, network, and temperatures, plus the top 12 processes by CPU. Advanced mode adds per-core graphs."
 ---
 
 Pyren's system monitor reads `/proc`, `/sys`, and DRM `fdinfo` — it has no dependency on HP-specific hardware. All metrics are available on any Linux machine, which also means the monitor UI can be developed and tested without an OMEN laptop present. The daemon keeps the previous sample to compute deltas, and the sampler is primed at construction so the very first call returns real numbers rather than zeros.

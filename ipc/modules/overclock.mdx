@@ -1,7 +1,7 @@
 ---
-title: "overclock Module: GPU Clock Offsets and Locks"
+title: "overclock Module: GPU Clock Offsets and Clock Locks"
 sidebarTitle: "overclock"
-description: "The overclock module applies NVIDIA GPU core and memory clock offsets via NVML or nvidia-settings, with confirmation-gated apply and automatic revert on timeout."
+description: "Applies NVIDIA GPU core and memory clock offsets via NVML or nvidia-settings, with consent gating, a stepped apply, and a revert timer spanning reboots."
 ---
 
 The `overclock` module manages GPU clock offsets and is the only module in Pyren that operates outside the firmware's stock envelope. Every other module either stays within the envelope the firmware shipped or explicitly restores it; this one can leave it. That distinction is why it is the only module with a mandatory consent step, a staged apply, and an automatic revert timer — not as ceremony, but because an offset that survives a benchmark can still hang the machine in a game, and what happens then is a frozen screen and lost work. Three gates stand between a slider and a written clock offset, and a client cannot skip any of them.

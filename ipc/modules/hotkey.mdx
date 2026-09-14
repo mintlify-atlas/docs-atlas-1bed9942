@@ -1,7 +1,7 @@
 ---
-title: "hotkey Module: Performance Key Binding and Events"
+title: "hotkey Module: Performance Key Binding and OSD Events"
 sidebarTitle: "hotkey"
-description: "The hotkey module listens on /dev/input for a user-configured keyboard shortcut and publishes hotkey.pressed events to trigger the OSD widget."
+description: "Binds a keyboard shortcut by reading /dev/input below any compositor, fires hotkey.pressed events, and supports scancode-only binding for unmapped keys."
 ---
 
 The `hotkey` module reads `/dev/input` directly — below any compositor or desktop session — and fires an event on the daemon's event bus whenever a configured key combination is pressed. It deliberately bypasses compositor keybindings: one shortcut works on Hyprland, GNOME, KDE, and X11 alike, continues working at the login screen before any session exists, and is configured in one place instead of per-desktop. Nothing is bound by default, because there is no reliable table of "the OMEN key is keycode N" — which key a laptop sends, whether the kernel has assigned a keycode for it, and which `/dev/input` device it appears on vary between machines of the same model. The machine is asked instead.
@@ -106,6 +106,14 @@ With `"bind": true` in the params, `hotkey.learn` binds whatever it catches auto
 `modifiers` is `{ ctrl, shift, alt, meta }` — four booleans. The shortcut fires only when the modifier state matches exactly, so `Ctrl+P` does not activate on `Ctrl+Shift+P`. This prevents a shortcut from hijacking whatever the user has bound to a superset.
 
 A **modifier alone is never a trigger**. The watcher never reports a bare modifier press, and `setTriggers` refuses a trigger that consists of modifiers only. This is both intentional and necessary: learning a combination requires that the modifier go down first, and if the first key to arrive were taken as the trigger, it would always be the modifier.
+
+## A button is not a key
+
+The watcher opens only `/dev/input` devices that report at least one keycode below `BTN_MISC` (0x100), read from the device's sysfs `capabilities/key` bitmask. A mouse and a touchpad report buttons and no keys at all, so neither is ever opened by the watcher. `setTriggers` also refuses a `BTN_*` keycode explicitly.
+
+Both halves exist because of one real accident: a learn window caught `BTN_TOOL_FINGER` (325) from the touchpad — the kernel's way of saying "a finger is resting here" — and bound the power-mode cycle to *touching the trackpad*, which then walked the machine through all four modes as fast as it could be touched.
+
+The button ranges are not a simple threshold. The kernel assigns more `KEY_*` codes above the first button block, so only the specific ranges `0x100–0x160` and `0x2c0–0x300` are buttons; everything else is a key.
 
 ## Keys without keycodes
 

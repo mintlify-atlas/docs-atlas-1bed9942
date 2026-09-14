@@ -1,7 +1,7 @@
 ---
-title: "Pyren Configuration Files and Storage Paths"
+title: "Pyren JSON Config Files: Paths, Safety, and Fallback"
 sidebarTitle: "Config Files"
-description: "Pyren stores configuration in JSON files under /etc/pyren (system) and ~/.config/pyren (user). Each module owns one namespace with atomic writes and corrupt-file handling."
+description: "Pyren stores JSON config under /etc/pyren and ~/.config/pyren. Each module owns one file, with atomic writes, corrupt-file handling, and version checks."
 ---
 
 Pyren uses a hand-rolled JSON config system implemented in the `pyren-config` crate (`daemon/crates/config`). Each hardware module owns exactly one namespace, persisted as a single JSON file. There is no layered config, no environment interpolation, and no third-party framework — the requirements are narrow, and what actually matters is failure behaviour: a daemon that can be killed at any moment needs writes that are safe to interrupt, and a config system that silently overwrites a corrupt file is worse than one that stops and tells you.
@@ -39,14 +39,14 @@ A config file written by a *newer* build of the daemon is refused rather than pa
 
 ## `restoreModeOnStart`
 
-The `fan.json` file carries a `restoreModeOnStart` flag that controls the daemon's behaviour at startup:
+Both `power.json` and `fan.json` carry a `restoreModeOnStart` flag that controls what each module does at daemon startup:
 
-| Value | What happens at daemon start |
-|-------|------------------------------|
-| `true` | The daemon reads the last-used power mode from `power.json` and re-applies it before accepting any connections |
-| `false` | The daemon reads whatever power mode the firmware is currently set to and reports that — it changes nothing |
+| Module | File | What the flag controls |
+|--------|------|------------------------|
+| `power` | `/etc/pyren/power.json` | Whether the daemon re-applies the last-used **power mode** (firmware profile, PL1/PL2) on start, or reports whatever the firmware is currently set to without changing it |
+| `fan` | `/etc/pyren/fan.json` | Whether the daemon re-applies the last-used **fan mode** (auto, manual, curve) on start, or leaves the fans in their current state |
 
-This distinction matters after a reboot: with `restoreModeOnStart` disabled, the firmware's own default wins. With it enabled, the daemon restores your last-used mode, including any custom PL1/PL2 tuning stored in `power.json`.
+This distinction matters after a reboot: with `restoreModeOnStart` disabled, the firmware's own defaults win. With it enabled, the daemon restores your last-used mode, including any custom tuning stored in the respective config file.
 
 <Warning>
 Do not hand-edit config files while the daemon is running. The daemon holds an in-memory representation of its config and writes it back on change. Any edits you make to the file directly will be silently overwritten the next time the daemon saves. Use `pyren-ctl` or the app UI to make changes while the daemon is live. If you need to edit files directly, stop the daemon first with `sudo systemctl stop pyren-daemon`.

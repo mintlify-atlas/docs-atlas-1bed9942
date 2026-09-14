@@ -1,5 +1,5 @@
 ---
-title: "core Module: Capabilities and Event Polling"
+title: "core Module: Capability Discovery and Long-Poll Events"
 sidebarTitle: "core"
 description: "The core module provides core.capabilities to discover loaded modules and core.nextEvent for long-poll event streaming from the Pyren daemon."
 ---
@@ -59,7 +59,7 @@ A long-poll that does not reply until at least one event has been queued or the 
   "missed": 0,
   "events": [
     { "seq": 13, "topic": "hotkey.pressed", "ageMs": 4,
-      "payload": { "action": "show", "mode": "balanced" } },
+      "payload": { "action": "show", "device": "kbd0", "mode": "balanced" } },
     { "seq": 14, "topic": "power.mode",     "ageMs": 4,
       "payload": { "mode": "balanced", "source": "hotkey" } }
   ]
@@ -80,7 +80,7 @@ The daemon keeps 64 events. A `missed` count greater than zero is the honest ack
 
 | Topic | Published when | Key payload fields |
 |---|---|---|
-| `hotkey.pressed` | The bound key was pressed | `action` (`"show"`), `mode` — the mode currently in force |
+| `hotkey.pressed` | The bound key was pressed | `action` (`"show"`), `device`, `mode` — the mode currently in force |
 | `power.mode` | The power mode actually changed, whoever changed it | `mode`, `source` (`request` / `hotkey` / `auto` / `tuning` / `osProfile` / `external`) |
 | `power.overridden` | Another program changed a knob the daemon had set | `knob`, `expected`, `found`, `reverted` |
 | `fan.mode` | A `fan.setMode` took effect, whoever asked | `mode`, `manualPwm`, `source` |

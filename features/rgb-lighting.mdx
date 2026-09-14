@@ -1,7 +1,7 @@
 ---
-title: "Keyboard RGB Lighting Control in Pyren"
+title: "Keyboard RGB Lighting Effects and Control in Pyren"
 sidebarTitle: "RGB Lighting"
-description: "Configure keyboard RGB lighting with breathing, spectrum, rainbowWave, wave, and fade effects. Save up to 15 configurations and control brightness and power behavior."
+description: "Configure RGB lighting with breathing, spectrum, rainbowWave, wave, and fade effects. Save up to 15 configurations with brightness and power-sweep control."
 ---
 
 Pyren's RGB module controls two pieces of hardware that are entirely unrelated underneath: a **4-zone lightbar** (driven over ACPI-WMI or kernel sysfs) and a **per-key RGB keyboard** (driven over USB HID). Both are probed at startup; only the 4-zone lightbar is currently driven. Neither is assumed from the laptop model name — hardware detection determines what is available.

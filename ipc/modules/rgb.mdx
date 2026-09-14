@@ -1,13 +1,13 @@
 ---
-title: "rgb Module: Keyboard and Lightbar RGB Control"
+title: "rgb Module: Four-Zone Lightbar and RGB Keyboard Control"
 sidebarTitle: "rgb"
-description: "The rgb module controls the 4-zone ACPI lightbar and per-key USB keyboard lighting with effects, brightness, power sweep animations, and up to 15 saved configurations."
+description: "Controls the 4-zone ACPI lightbar and per-key keyboard via auto-probed dialects, with five lighting effects, brightness throttling, and 15 saved presets."
 ---
 
 The `rgb` module drives two distinct pieces of RGB hardware through a single interface: the 4-zone lighting strip controlled over ACPI-WMI, and the per-key USB keyboard. Both are probed at startup and whenever the relevant interfaces change on disk. Which hardware path is active — and which dialect within those paths — is determined entirely by what the machine answers, never by model name or a lookup table. The module exposes a unified set of methods regardless of which path is live, scaling every brightness value in software so a slider means the same thing on every dialect.
 
 <Info>
-FEATURES.md notes that three distinct lightbar dialects exist and are auto-picked based on what the hardware answers: `kernelZones` (the kernel's own `rgb_zones` sysfs files), `fourZone` (WMI command `0x20009`, types 2/3), and `lightbar` (WMI command `0x20009`, type 11). They are tried in that order and the order is not arbitrary — `kernelZones` cannot send the firmware a command it did not expect, so wherever it exists it is the right answer.
+Three distinct lightbar dialects exist and are auto-picked based on what the hardware answers: `kernelZones` (the kernel's own `rgb_zones` sysfs files), `fourZone` (WMI command `0x20009`, types 2/3), and `lightbar` (WMI command `0x20009`, type 11). They are tried in that order and the order is not arbitrary — `kernelZones` cannot send the firmware a command it did not expect, so wherever it exists it is the right answer.
 </Info>
 
 ## Hardware detection

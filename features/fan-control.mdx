@@ -1,7 +1,7 @@
 ---
-title: "Fan Control Modes and Custom Curves in Pyren"
+title: "Fan Control: Auto, Manual, and Custom Curves in Pyren"
 sidebarTitle: "Fan Control"
-description: "Control laptop fans in Auto, Max, Manual, or Curve mode. Pyren's patched driver enables speeds below the firmware's minimum floor with automatic stall correction."
+description: "Control laptop fans in Auto, Max, Manual, or Curve mode. Pyren's patched driver enables speeds below the firmware's minimum floor with stall correction."
 ---
 
 Pyren controls laptop fans via the `hp-wmi` kernel module and supports four distinct fan modes. Two of these modes (`auto` and `max`) require only the `pwm1_enable` sysfs file, which is available even on boards the stock driver has limited support for. The other two (`manual` and `curve`) additionally require `pwm1`, which lets a specific speed be commanded. Before offering manual or curve controls, Pyren reads `capabilities` from the daemon to confirm what the running driver actually exposes on this machine — rather than discovering missing support from a failed write.
@@ -19,23 +19,23 @@ Fan mode is completely independent of power profile. You can run `manual` or `cu
 | **Manual** | User sets a fixed fan speed (0–100%) that holds constant, regardless of temperature. |
 | **Curve** | User defines a custom temperature/speed curve. The daemon interpolates between points and follows the curve in real time. |
 
-Each power profile stores its own fan curve. When you switch from Eco to Performance, the fan module automatically picks up that profile's stored curve. The `fan` and `power` modules communicate through the daemon's internal event bus — neither module calls the other directly.
+Each power profile has its own stored fan curve. The fan module follows the active profile via the daemon's internal event bus — `power` announces every mode change to an in-process subscriber in `fan`, so neither module calls the other directly and the wiring lives in the daemon binary alone.
 
 ## Lower minimum fan speed
 
 The stock `hp-wmi` driver enforces a minimum fan speed floor — the slowest entry in its own fan table — and clamps every manual speed to it. On the HP OMEN (board 8D2F), this floor is 1800 RPM.
 
-Pyren's patched driver adds a `min_rpm_override` module parameter, which lifts that clamp. After calibration, Pyren measured a stable minimum of 600 RPM on the 8D2F, and uses 700 RPM (one 100 RPM step above the measured floor) as its effective minimum. Below that floor the firmware takes control and stops the fans when the machine is cool.
+Pyren's patched driver adds a `min_rpm_override` module parameter, which lifts that clamp. `fan.calibrate` measures the stable minimum — how slow the fans can hold without stalling — and `pyrenMinRpm` is set one 100 RPM step above the measured floor (600 RPM held, 700 RPM used on 8D2F). Below that floor the firmware takes control and stops the fans when the machine is cool.
 
 <Steps>
 
 ### Run calibration
 
-`fan.calibrate` spins the fans to max, watches the tachometer until the reading settles, then returns them to the previous mode. The same call measures the stable minimum — how slow the fans can hold without stalling.
+`fan.calibrate` spins the fans to max, watches the tachometer until the reading settles, then returns them to the previous mode. The call also measures `fanStableMinRpm` — the slowest the fans held with the driver's clamp lifted.
 
 ### Choose a floor
 
-`keepDriverFloor` (on by default) lets you keep the stock driver's conservative floor or use Pyren's measured lower one. Switch it off to allow Pyren's floor via Settings.
+`keepDriverFloor` (on by default) controls which floor is active. When enabled, Pyren uses the driver's conservative floor. Disable it via `fan floor pyren` (or **Settings**) to use the lower measured floor instead.
 
 ### The daemon pins the ceiling to the driver
 
@@ -45,7 +45,7 @@ The measured max RPM is written to `/etc/modprobe.d/pyren-hp-wmi.conf` so the dr
 
 ### Automatic stall correction
 
-While Pyren's lower floor is active, the daemon watches the tachometer on every control tick. If a commanded low speed reads near zero, or jumps back up (a stalled fan restarting itself), that counts as a fault. After three faults within half an hour, the daemon automatically raises the stored minimum by one 100 RPM step, updates the driver's `min_rpm_override`, and logs the event to `floorNotices`. Each correction is shown in the app's notification history and fires an OS notification.
+While Pyren's lower floor is active, the daemon watches the tachometer on every control tick. A commanded low speed that reads near zero, or one that jumps back up (a stalled fan restarting), is a fault. After three faults within half an hour, the daemon automatically raises the stored minimum by one 100 RPM step, updates the driver's `min_rpm_override`, and appends the event to `floorNotices`. Each correction is shown in the app's notification history and fires an OS notification.
 
 The automatic correction only ever raises the floor — never above the driver's own floor — and waits at least five minutes between raises. A full recalibration clears the log and remeasures from scratch.
 
@@ -70,7 +70,7 @@ While a cleaning cycle is running, the machine has **no working cooling**. The d
 
 The cleaner supports two firmware generations:
 
-- **Modern ("CleanCreek")** — per-fan speed in hundreds of RPM, with a controlled ramp up into reverse and a ramp back down to stop.
+- **Modern (\"CleanCreek\")** — per-fan speed in hundreds of RPM, with a controlled ramp up into reverse and a ramp back down to stop.
 - **Legacy** — a single toggle bit; no speed control and no ramp.
 
 Which generation a machine uses is probed automatically, never guessed from the model name.
@@ -85,11 +85,15 @@ pyren-ctl fan get
 pyren-ctl fan set auto
 
 # Set manual speed at 50%
-pyren-ctl fan set manual 50
+pyren-ctl fan set manual --pwm 128
 
 # Apply a custom temperature/speed curve
 # Format: tempC:percent,tempC:percent,...
 pyren-ctl fan curve 40:20,60:50,85:100
+
+# Choose which minimum floor to use
+pyren-ctl fan floor driver   # use the driver's conservative floor (default)
+pyren-ctl fan floor pyren    # use Pyren's lower measured floor
 
 # Run calibration (blocks while fans spin)
 pyren-ctl fan calibrate

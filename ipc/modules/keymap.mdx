@@ -1,7 +1,7 @@
 ---
-title: "keymap Module: System-wide Key Remapping"
+title: "keymap Module: System-Wide Key Remapping via uinput"
 sidebarTitle: "keymap"
-description: "The keymap module remaps physical keys to other keycodes system-wide via a /dev/uinput virtual device, without keyd or a udev hwdb entry."
+description: "Remaps physical evdev keycodes system-wide via a /dev/uinput virtual device, using EVIOCGRAB to grab keyboards without keyd or a udev hwdb entry."
 ---
 
 The `keymap` module creates a `/dev/uinput` virtual keyboard and remaps physical key events at the evdev layer, below any compositor or desktop session. It works because the daemon already opens `/dev/input/event*` directly for the `hotkey` module — a `/dev/uinput` virtual device reusing that same access is one fewer moving part than a second daemon's config file, and it means no `keyd`, no `udev hwdb` entry, and no compositor reconfiguration. Every grabbed keyboard's events are forwarded through a single virtual device, with a keycode substituted wherever a mapping matches.

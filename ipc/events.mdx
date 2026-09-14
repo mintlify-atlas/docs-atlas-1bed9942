@@ -1,7 +1,7 @@
 ---
 title: "Daemon Events and Long Polling with core.nextEvent"
 sidebarTitle: "Events"
-description: "Subscribe to real-time daemon events using core.nextEvent long polling. Covers hotkey.pressed, power.mode, power.overridden, fan.mode, and fan.floorRaised topics."
+description: "Subscribe to Pyren daemon events via core.nextEvent long polling. Covers the 64-event ring buffer, all five topics, and power.mode source values."
 ---
 
 Events let clients react to daemon-side changes without polling `getState` in a tight loop. The user presses the hotkey, another program shifts the power mode, the fan stall-watch nudges the fan floor — all of these happen on the daemon's side, and a UI that cares about them needs to hear about it within the tens of milliseconds a person notices, not on the next poll. Pyren delivers all events through a single long-poll method, `core.nextEvent`, without changing anything about the framing: a client still sends one request line and reads one response line, the call simply does not answer until there is something to say.
@@ -40,7 +40,7 @@ pyren-ctl events
         "seq": 13,
         "topic": "hotkey.pressed",
         "ageMs": 4,
-        "payload": { "action": "show", "mode": "balanced" }
+        "payload": { "action": "show", "device": "event3", "mode": "balanced" }
       },
       {
         "seq": 14,

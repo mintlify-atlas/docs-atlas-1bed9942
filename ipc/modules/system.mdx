@@ -1,7 +1,7 @@
 ---
-title: "system Module: Machine Info and Live Metrics"
+title: "system Module: Machine Identity and Live System Metrics"
 sidebarTitle: "system"
-description: "The system module exposes system.getInfo for machine identity and compatibility, and system.getMetrics for live CPU, GPU, memory, disk, network, and process data."
+description: "The system module provides system.getInfo for machine identity and compatibility, and system.getMetrics for live CPU, GPU, memory, disk, and process data."
 ---
 
 The `system` module is not HP-specific. It reads `/proc`, `/sys`, `statvfs`, and `lspci`, so it reports real data on any Linux machine. That is deliberate: it lets the vitals UI be developed and tested away from an OMEN laptop, and it answers the "is this hardware compatible?" question that the rest of the app depends on. The `system` module is the one module `core.capabilities` will always report as `supported: true`.

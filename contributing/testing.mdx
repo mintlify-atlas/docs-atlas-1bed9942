@@ -1,7 +1,7 @@
 ---
 title: "Testing Pyren: Unit, Integration, and Hardware Tests"
 sidebarTitle: "Testing"
-description: "Run Pyren's hermetic unit tests, fixture-based integration tests for power profiles, the parity test between pyren-check and pyren-check.sh, and live hardware soak tests."
+description: "Run Pyren's hermetic unit tests, fixture-based power profile tests, the parity test between pyren-check and pyren-check.sh, and live hardware soak tests."
 ---
 
 Pyren has three tiers of testing: CI-safe hermetic tests that run on any machine with no hardware at all, fixture-based integration tests for power profiles that drive a fake sysfs tree, and live hardware soak tests that need a real running daemon and will briefly change the machine's active power mode. Know which tier you're in before running a suite.
@@ -16,10 +16,19 @@ These are the same checks `.github/workflows/ci.yml` runs on every push and ever
 cd daemon    && cargo test --workspace && cargo clippy --all-targets -- -D warnings
 cd app       && bun run check && bun run build
 cd app/src-tauri && cargo check --all-targets
+cd osd       && cargo test && cargo clippy --all-targets -- -D warnings
 sh -n tools/pyren-check.sh && sh -n tools/power-soak.sh
 ```
 
-CI splits this into four jobs (`daemon`, `app`, `tauri`, `shell`). The `daemon` job also runs `check/tests/parity.rs`, which invokes `tools/pyren-check.sh` through `/bin/sh` — `dash` on the CI runner rather than `bash` or `zsh`. That POSIX compatibility is the point.
+CI splits this into five jobs. The `daemon` job also runs `check/tests/parity.rs`, which invokes `tools/pyren-check.sh` through `/bin/sh` — `dash` on the CI runner rather than `bash` or `zsh`. That POSIX compatibility is the point.
+
+| Job | What it runs |
+|---|---|
+| `daemon` | `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings` |
+| `app` | `bun install --frozen-lockfile`, `bun run check`, `bun run build` |
+| `tauri` | `cargo check --all-targets` on `app/src-tauri`, after installing WebKitGTK |
+| `osd` | `cargo test`, `cargo clippy --all-targets -- -D warnings` on `osd/`, after building `gtk4-layer-shell` from source |
+| `shell` | `sh -n tools/pyren-check.sh`, `sh -n tools/power-soak.sh` |
 
 <Note>
 There is a known flaky socket test under `cargo test --workspace` — documented in `dev/FINDINGS.md`. If you hit it, re-run the suite, or pass `--skip-tests` when running `tools/release.sh` on a commit that CI already passed.

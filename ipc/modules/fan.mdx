@@ -1,7 +1,7 @@
 ---
-title: "fan Module: Fan Modes, Curves, and Calibration"
+title: "fan Module: Fan Speed Modes, Curves, and Floor Calibration"
 sidebarTitle: "fan"
-description: "The fan module controls fan speed via Auto, Max, Manual, and Curve modes, exposes per-fan RPM tachometers, runs floor calibration, and manages the fan cleaning cycle."
+description: "Controls hp-wmi PWM fan speed via Auto, Max, Manual, and Curve modes, exposes per-fan RPM, manages the patched driver floor, and runs the cleaning cycle."
 ---
 
 The `fan` module drives the `hp-wmi` PWM interface and supports four operating modes: Auto (firmware curve), Max (maximum configured RPM), Manual (fixed PWM percentage the user sets), and Curve (user-defined temperature/speed point pairs). Not every machine can do every mode — the kernel driver exposes two independent sysfs files and their presence determines what is possible. Before offering any fan controls, read `fan.getStatus`'s `capabilities` object to know what this board actually supports.
@@ -48,13 +48,15 @@ Every write returns the same status object that `fan.getStatus` does, so a calle
 { "id": 1, "module": "fan", "method": "setMode",
   "params": { "mode": "manual", "pwm": 128 } }
 
-// Activate a user-defined curve
-{ "id": 1, "module": "fan", "method": "setMode",
-  "params": { "mode": "curve", "points": [
-    { "tempC": 40, "pwmPercent": 20 },
-    { "tempC": 60, "pwmPercent": 50 },
-    { "tempC": 85, "pwmPercent": 100 }
+// Activate curve mode (define the curve first with fan.setCurve, then switch the mode)
+{ "id": 1, "module": "fan", "method": "setCurve",
+  "params": { "curve": [
+    { "tempC": 40, "percent": 20 },
+    { "tempC": 60, "percent": 50 },
+    { "tempC": 85, "percent": 100 }
   ] } }
+{ "id": 2, "module": "fan", "method": "setMode",
+  "params": { "mode": "curve" } }
 ```
 
 <Warning>
