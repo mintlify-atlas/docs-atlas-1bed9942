@@ -1,0 +1,110 @@
+---
+title: "Testing Pyren: Unit, Integration, and Hardware Tests"
+sidebarTitle: "Testing"
+description: "Run Pyren's hermetic unit tests, fixture-based integration tests for power profiles, the parity test between pyren-check and pyren-check.sh, and live hardware soak tests."
+---
+
+Pyren has three tiers of testing: CI-safe hermetic tests that run on any machine with no hardware at all, fixture-based integration tests for power profiles that drive a fake sysfs tree, and live hardware soak tests that need a real running daemon and will briefly change the machine's active power mode. Know which tier you're in before running a suite.
+
+---
+
+## CI checks
+
+These are the same checks `.github/workflows/ci.yml` runs on every push and every pull request. Run them locally before pushing — it's faster than waiting for the badge, and a local failure names exactly which half broke.
+
+```sh
+cd daemon    && cargo test --workspace && cargo clippy --all-targets -- -D warnings
+cd app       && bun run check && bun run build
+cd app/src-tauri && cargo check --all-targets
+sh -n tools/pyren-check.sh && sh -n tools/power-soak.sh
+```
+
+CI splits this into four jobs (`daemon`, `app`, `tauri`, `shell`). The `daemon` job also runs `check/tests/parity.rs`, which invokes `tools/pyren-check.sh` through `/bin/sh` — `dash` on the CI runner rather than `bash` or `zsh`. That POSIX compatibility is the point.
+
+<Note>
+There is a known flaky socket test under `cargo test --workspace` — documented in `dev/FINDINGS.md`. If you hit it, re-run the suite, or pass `--skip-tests` when running `tools/release.sh` on a commit that CI already passed.
+</Note>
+
+---
+
+## Power profile tests (hermetic)
+
+The hermetic suite drives a laptop that does not exist. It builds a fixture sysfs tree and stand-in power managers (a `busctl` serving the power-profiles API, TLP, auto-cpufreq) that record every request, then points the module at them via environment variables — confining every external program to the fixture's `bin/` so a real `tlp` or `auto-cpufreq` on the developer's machine can never answer a test.
+
+```sh
+cd daemon && cargo test -p pyren-power --test profiles
+```
+
+Assertions are exact: *Eco set the firmware profile to `low-power` and asked the OS for `power-saver`*. The suite covers switching between all four modes (including twenty rounds of cycling and ten threads doing it at once), daemon restart with and without restore-on-start, the stock-envelope ratchet across five boots, and simulated timelines of up to forty minutes of supervision — all on a simulated clock.
+
+The one test that runs a real clock is ignored by default. To opt in, set `PYREN_SOAK_SECS` and pass `--ignored`:
+
+```sh
+PYREN_SOAK_SECS=300 cargo test -p pyren-power --test profiles -- --ignored --nocapture
+```
+
+This runs the actual supervisor thread against the fixture for five minutes and asserts at every sample that the daemon and the machine agree and that the supervisor is not flapping.
+
+---
+
+## Parity test (pyren-check vs pyren-check.sh)
+
+`pyren-check` (the compiled Rust binary) and `tools/pyren-check.sh` (a dependency-free POSIX shell twin) perform the same checks in the same order with the same output format. The parity test runs both against the same fixtures and compares exit status, compatibility verdict, `controls`, and every check in all three sections — so the two can never drift apart silently.
+
+```sh
+cd daemon && cargo test -p pyren-check
+```
+
+To exercise the checks without HP hardware, point them at fixtures using the three environment variables both implementations honor:
+
+| Variable | Stands in for |
+|---|---|
+| `PYREN_HWMON_DIR` | The `hp-wmi` hwmon node |
+| `PYREN_USB_DEVICES` | `/sys/bus/usb/devices`, for the per-key keyboard probe |
+| `PYREN_ACPI_CALL` | `/proc/acpi/call`, for the lightbar probe |
+
+```sh
+PYREN_HWMON_DIR=/tmp/fake PYREN_USB_DEVICES=/tmp/fake/usb cargo run -p pyren-check
+```
+
+---
+
+## Energy profiles cross-module test
+
+This suite answers a different question than the power profile tests — not *which* firmware profile a mode selects, but whether the **envelope** it carries reaches the hardware, and that the three modules (`pyren-power`, `pyren-fan`, `pyren-overclock`) never call each other:
+
+```sh
+cd daemon && cargo test --test energy_profiles
+```
+
+The suite lives in `daemon/tests/` rather than inside a crate because it is cross-module by design. It verifies that changing the power mode does not write to the fans, changing the fan mode does not write to the envelope, and an overclock request does not reach the CPU's power limits.
+
+---
+
+## Hardware soak tests
+
+These suites need a real machine with a running daemon. They cannot be faked by fixtures and are deliberately excluded from CI.
+
+```sh
+tools/power-soak.sh                # about 6 minutes
+tools/power-soak.sh --minutes 15   # watch the supervisor evolve for longer
+tools/power-soak.sh --quick        # switching only, no waiting
+```
+
+<Warning>
+Hardware soak tests close the app if one is open, restart the `pyren-daemon.service` with `sudo`, and change the active power mode. Both disruptions are intentional — *what happens to the profile when the app goes away* and *what survives a daemon restart* are the questions being asked, and neither can be answered without doing it. The script restores the machine to the mode it found on the way out, including on Ctrl-C.
+</Warning>
+
+The fan self-test that requires physical hardware runs independently:
+
+```sh
+tools/pyren-check.sh               # dependency-free fan self-test
+```
+
+---
+
+## TEST.md — the honest hardware record
+
+`TEST.md` is the truthful record of what has actually been verified on real hardware, feature by feature — what works (✅), what is only partly proven (⚠️), and what does not exist yet (❌), with the exact command or measurement behind each claim. Every number in it comes from a suite you can run yourself. "Verified on hardware" means someone watched it happen on a physical laptop.
+
+**If your change alters what works, update `TEST.md` in the same PR.** Keep it truthful — an untested path stays ⚠️ or ❌ until it has actually been exercised. "The decision logic has tests" is not the same claim as "the effect was seen on hardware". When in doubt, under-claim.

@@ -1,0 +1,61 @@
+---
+title: "Add a Language Translation to Pyren"
+sidebarTitle: "Translations"
+description: "Add a new locale JSON file to translate Pyren's app strings and daemon messages. The build-time glob auto-discovers new files — no table to update."
+---
+
+Pyren uses i18next for app strings and a `Msg` system for daemon messages; both halves are translated by adding JSON locale files to the same directory. There is no language table to maintain and no code to change — a new file is all it takes.
+
+---
+
+## App strings
+
+The app's i18n runtime (`app/src/lib/i18n/index.svelte.ts`) uses a three-tier fallback: the user's chosen language → a user-configured fallback → the app default (`en`). A key that is missing from every catalog renders as the key itself, so untranslated strings appear in the UI as visible text rather than going blank.
+
+<Steps>
+  <Step title="Copy the English baseline">
+    Copy `app/src/lib/i18n/locales/en.json` to a new file in the same directory named with the [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) base code — no region suffix:
+
+    ```sh
+    cp app/src/lib/i18n/locales/en.json app/src/lib/i18n/locales/fr.json
+    # e.g. de.json, pt.json, ja.json
+    ```
+  </Step>
+  <Step title="Translate the values">
+    Open your new file and translate the string **values**. Leave the **keys** and any `{placeholder}` tokens — `{name}`, `{count}`, and so on — completely untouched. Those tokens are interpolated at runtime and must match exactly.
+  </Step>
+  <Step title="Verify and ship">
+    That's it. The build-time glob picks up the new file automatically. The language appears in **Settings → Language** by itself — its display name comes from `Intl.DisplayNames`, so no label needs to be written.
+
+    ```sh
+    cd app && bun run check && bun run build
+    # Then switch to the new language in Settings and click through each page.
+    ```
+  </Step>
+</Steps>
+
+<Note>
+`en.json` is the authoritative catalog and must stay complete. Other locale files may be partial — any key missing from a translation falls back through the chain and eventually lands on the English string rather than going blank. When you add or rename a key in the app, add it to `en.json` (and ideally `es.json`) in the same change.
+</Note>
+
+---
+
+## Daemon strings
+
+The daemon's user-facing sentences do not travel as raw text. They travel as structured `pyren_core::Msg { key, params, text }` values, built with the `msg!` macro. When the app receives a `Msg`, its `tm()` / `errorText()` helpers look up `key` (with `params`) in the same `locales/*.json` files and fall back to the English `text` the daemon shipped if no translation is found.
+
+This means translating a daemon message works exactly the same way as translating an app string — edit the locale JSON. Daemon message keys live under their own sections in the locale files:
+
+| Key namespace | Covers |
+|---|---|
+| `rgb.dialect.*` | RGB lighting dialect messages |
+| `keymap.*` | Key mapping messages |
+| `overclock.*` | GPU overclocking messages |
+
+If you add a new `msg!` call in a daemon crate, add its key to `en.json` at the same time. Until it exists there, `tm()` falls back to the daemon's bundled `text` and the string silently stays English — which works, but means the translation is invisible to contributors working from the locale files alone.
+
+<Tip>
+The easiest way to find missing daemon translations is to diff each crate's `msg!` key namespaces against the top-level keys in the locale files. A whole missing crate section is easy to overlook because every individual string still renders correctly through the fallback — only the diff reveals the gap.
+</Tip>
+
+One known limit: where one `Msg` embeds a fragment produced by another `Msg`, the inner fragment is passed as pre-rendered English text and is not re-translated. The exception is joined lists — `Msg::join` splits them so each part is translated individually. See `docs/01-ipc-protocol.md` §"Translatable messages (`Msg`)" for the full contract.

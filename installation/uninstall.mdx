@@ -1,0 +1,41 @@
+---
+title: "Uninstall Pyren from Your Linux System"
+sidebarTitle: "Uninstall"
+description: "Remove Pyren binaries, systemd units, driver sources, and icons. Use --purge to also delete configuration files and user settings."
+---
+
+The `uninstall.sh` script that ships inside the release tarball (and lives at `install/uninstall.sh` in the source tree) is the exact inverse of `install.sh`. It stops and disables the daemon and OSD services, removes every file the installer placed, and cleans up the group membership — leaving your system in the state it was in before Pyren was installed.
+
+## Uninstall Modes
+
+```sh
+sudo ./uninstall.sh           # remove binaries, systemd units, driver sources, and icons
+sudo ./uninstall.sh --purge   # …and also delete /etc/pyren and ~/.config/pyren
+```
+
+<Warning>
+  `--purge` permanently deletes all Pyren configuration and user settings, including any fan curves, power-mode tuning, hotkey bindings, and lightbar preferences stored in `/etc/pyren` and `~/.config/pyren`. This cannot be undone. Run without `--purge` first if you may want to reinstall later and keep your settings.
+</Warning>
+
+## What Gets Removed
+
+The uninstaller removes the files and entries placed by `install.sh`. `<prefix>` is whatever prefix was used at install time (default: `/usr/local`).
+
+| Path | What it was |
+|---|---|
+| `<prefix>/bin/{pyren,pyren-daemon,pyren-ctl,pyren-check,pyren-osd}` | The five installed binaries |
+| `/usr/share/pyren/driver/` | Patched `hp-wmi` kernel module sources |
+| `<prefix>/share/applications/pyren.desktop` | The application-menu entry |
+| `<prefix>/share/icons/hicolor/*/apps/pyren.*` | The app icon at all standard sizes |
+| `<prefix>/lib/systemd/user/pyren-osd.service` | The OSD widget's user systemd service |
+| `/etc/systemd/system/pyren-daemon.service` | The daemon's system service |
+| `/etc/pyren` | System-wide configuration *(only with `--purge`)* |
+| `~/.config/pyren` | Per-user settings and preferences *(only with `--purge`)* |
+
+## The `pyren` Group
+
+The `pyren` group created by the installer is intentionally **left in place** by the uninstaller. Removing a group that user accounts still belong to is not the installer's responsibility, and an empty group has no effect on the system. If you want to remove it manually after uninstalling:
+
+```sh
+sudo groupdel pyren
+```

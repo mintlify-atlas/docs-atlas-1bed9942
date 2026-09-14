@@ -1,0 +1,177 @@
+---
+title: "Set Up a Pyren Development Environment"
+sidebarTitle: "Dev Setup"
+description: "Install Rust, Bun, WebKitGTK, and GTK 4 dependencies, then run all three Pyren components — daemon, app, and OSD widget — with the dev:all script."
+---
+
+Pyren is three separate programs — a privileged Rust daemon (`daemon/`), an unprivileged Tauri + SvelteKit app (`app/`), and the OSD widget (`osd/`) — each with its own build toolchain and its own process lifetime. This page walks through installing every prerequisite and getting all three running together, whether you prefer the one-command shortcut or running each piece in its own terminal.
+
+## Prerequisites
+
+Install the following before attempting any build. The daemon builds with no extra system libraries, but the app and widget each need their own native GUI dependencies.
+
+### Rust + Cargo
+
+Install via [rustup](https://rustup.rs):
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Bun
+
+Install Bun, then add it to your shell's `rc` file:
+
+```sh
+curl -fsSL https://bun.sh/install | bash
+```
+
+```sh
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+```
+
+### WebKitGTK (required for `app/src-tauri`)
+
+**Arch / CachyOS:**
+
+```sh
+sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file openssl \
+  appmenu-gtk-module gtk3 libappindicator-gtk3 librsvg
+```
+
+**Other distros:** see the [Tauri Linux prerequisites](https://tauri.app/start/prerequisites/#linux) for the equivalent packages on Fedora, Debian, and Ubuntu.
+
+### GTK 4 + gtk4-layer-shell (required for `osd/`)
+
+These are only required to compile `osd/` — which is exactly why it lives in a separate workspace, so the daemon keeps building on a machine with no GUI libraries at all.
+
+**Arch / CachyOS:**
+
+```sh
+sudo pacman -S --needed gtk4 gtk4-layer-shell
+```
+
+**Debian / Ubuntu:** install `libgtk-4-dev` and `libgtk4-layer-shell-dev`. Note that `libgtk4-layer-shell-dev` is not packaged before Debian testing or Ubuntu 25.10 (Questing). On Ubuntu 24.04 and older, build it from source instead — the [gtk4-layer-shell build instructions](https://github.com/wmww/gtk4-layer-shell#building-from-source) and the `.github/workflows/ci.yml` `osd` job are both working recipes to follow.
+
+---
+
+## Running all three at once (recommended)
+
+The fastest way to work on any part of Pyren is `bun run dev:all`. It builds the daemon and the widget, restarts them, and launches the app — all in one command. It asks for `sudo` exactly once, to restart the daemon's systemd service.
+
+```sh
+cd app
+bun install
+bun run dev:all    # builds daemon + widget, restarts them, runs the app
+```
+
+`bun run dev:all` is `tools/dev-all.sh`. A variant that skips launching the app (useful when `tauri dev` is already running):
+
+```sh
+bun run dev:deps   # build daemon + widget, restart them, leave the app alone
+```
+
+<Warning>
+The most common silent failure in Pyren development is changing daemon code, restarting the app, and watching the old daemon answer exactly as it did before — because systemd still runs the binary it originally started from a fixed path. Nothing anywhere says why. `bun run dev:all` exists precisely to prevent this: it rebuilds everything and restarts the service for you. If you ever suspect stale daemon code is running, check the timestamps:
+
+```sh
+systemctl show pyren-daemon -p ExecMainStartTimestamp   # when was the service started?
+ls -l --time-style=+%T daemon/target/debug/pyren-daemon # when was the binary last built?
+```
+</Warning>
+
+### What `tauri dev` rebuilds (and what it doesn't)
+
+Understanding this table prevents the silent failure above:
+
+| Component | `tauri dev` rebuilds it? | To see your changes |
+|---|---|---|
+| Frontend (`app/src`) | Yes | Reloads automatically on save |
+| `app/src-tauri` | Yes | Restart `tauri dev` |
+| `daemon/` | **No** | `cargo build`, then `sudo systemctl restart pyren-daemon` |
+| `osd/` | **No** | `cargo build`, then stop `pyren-osd` (the app respawns it) |
+
+---
+
+## Running each component separately
+
+### Running the daemon
+
+Open a dedicated terminal and run:
+
+```sh
+cd daemon
+cargo run -p pyren-daemon
+```
+
+The daemon listens on `/tmp/pyren-daemon.sock` by default (an unprivileged dev fallback). Leave it running — the app can't do anything useful without it.
+
+To control how much the daemon logs, set `PYREN_LOG` to `off`, `error`, `warn`, `info` (the default), or `debug`:
+
+```sh
+PYREN_LOG=debug cargo run -p pyren-daemon
+```
+
+<Note>
+Reaching a daemon running as root requires being in its socket group. If the daemon prints `no 'pyren' group on this system, so only root can connect`, create the group and add your user:
+
+```sh
+sudo groupadd -f pyren && sudo usermod -aG pyren "$USER"
+```
+
+Group membership is picked up at login. Either log out and back in, or use `newgrp pyren` to activate it for a single shell. Until then, connecting fails with a permission error that the app spells out rather than swallowing.
+</Note>
+
+### Running the app
+
+```sh
+cd app
+bun install  # first time only
+bun run tauri dev
+```
+
+The first build compiles approximately 490 crates (WebKitGTK/GTK bindings and the Tauri shell) and takes a few minutes. Subsequent rebuilds are fast — only `app/src-tauri` recompiles.
+
+### Running the OSD widget
+
+The app starts the widget for you. It searches for `pyren-osd` beside its own binary, in `PATH`, and at `osd/target/<profile>/pyren-osd` in the source tree. Build it once with `cargo build` and the app picks it up automatically:
+
+```sh
+cd osd
+cargo build
+```
+
+To run the widget by hand:
+
+```sh
+cd osd
+cargo run -- --show    # --show draws it immediately, without pressing the key
+```
+
+---
+
+## Driving the daemon with `pyren-ctl`
+
+`pyren-ctl` is the quickest way to confirm that a daemon change actually did something. It reads `PYREN_SOCKET` like every other client:
+
+```sh
+cd daemon
+cargo run -q -p pyren-ctl -- status
+cargo run -q -p pyren-ctl -- power set eco
+cargo run -q -p pyren-ctl -- fan curve 40:20,60:50,85:100
+```
+
+Exit status is `0` on success, `1` if the daemon refused, `2` for bad arguments, and `3` if the daemon could not be reached.
+
+---
+
+## Wayland workaround
+
+If the app window flashes open and immediately closes with a message like `Gdk-Message: Error 71 dispatching to Wayland display`, force GTK to use XWayland instead of the native Wayland backend:
+
+```sh
+GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 bun run tauri dev
+```
+
+This is a known WebKitGTK/compositor interaction, not a bug in Pyren's code. Drop the variables once it stops being needed on your setup.

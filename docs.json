@@ -1,72 +1,99 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Pyren",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#00ADEF",
+    "light": "#4DC8F5",
+    "dark": "#005F8A"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/mglourido/PYREN"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/mglourido/PYREN"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "hardware-compatibility"
+            ]
+          },
+          {
+            "group": "Installation",
+            "pages": [
+              "installation/install-from-release",
+              "installation/install-from-source",
+              "installation/uninstall"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/power-profiles",
+              "features/fan-control",
+              "features/rgb-lighting",
+              "features/gpu-overclocking",
+              "features/system-monitor",
+              "features/hotkey-widget"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/config-files",
+              "configuration/environment-variables"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/development-setup",
+              "contributing/testing",
+              "contributing/adding-translations",
+              "contributing/releasing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "IPC Reference",
+        "groups": [
+          {
+            "group": "Protocol",
+            "pages": [
+              "ipc/overview",
+              "ipc/error-kinds",
+              "ipc/events"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "ipc/modules/core",
+              "ipc/modules/system",
+              "ipc/modules/power",
+              "ipc/modules/fan",
+              "ipc/modules/rgb",
+              "ipc/modules/overclock",
+              "ipc/modules/hotkey",
+              "ipc/modules/keymap"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

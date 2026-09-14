@@ -1,0 +1,77 @@
+---
+title: "GPU Overclocking: Core and Memory Offsets in Pyren"
+sidebarTitle: "GPU Overclocking"
+description: "Apply core and memory clock offsets to NVIDIA GPUs via NVML or nvidia-settings, with automatic revert after a confirmation timeout and explicit user consent."
+---
+
+Pyren supports GPU core and memory clock offsets for NVIDIA GPUs, applied through NVML or `nvidia-settings` depending on driver version. Every offset application is guarded by an explicit user consent step and an automatic revert timer: if you do not confirm the offset within the timeout window, the daemon rolls the card back to its previous clocks automatically. This safety net is in addition to — not a replacement for — your own testing and judgment.
+
+<Warning>
+GPU overclocking is an **advanced feature** that modifies hardware clock limits. Pyren requires explicit user confirmation before any offset is applied, and automatically reverts unconfirmed offsets. However, automatic revert is a best-effort safety net, not a guarantee of stability. An offset that survives a short confirmation period may still cause instability under sustained workloads. Pyren applies offsets in 15 MHz steps and reverts anything not confirmed, but it cannot determine whether your specific card is stable at a given offset.
+</Warning>
+
+## Supported mechanisms
+
+| Vendor | Mechanism | Needs | Notes |
+|---|---|---|---|
+| NVIDIA | **NVML** (`libnvidia-ml`) | Root only | Tried first. Works on Wayland with no Xorg or `Coolbits` required. |
+| NVIDIA | **`nvidia-settings`** | Xorg server + `Coolbits` | Fallback for drivers too old to expose NVML offset APIs. |
+| NVIDIA | **`--lock-gpu-clocks`** | Root | Pins to a fixed clock rather than an offset. |
+| AMD | Overdrive | — | Detected but not driven (no AMD hardware to test against). |
+| Intel | `gt_max_freq_mhz` | — | Not overclockable; frequency cap only. |
+
+<Note>
+**AMD Overdrive is detected but not driven.** The daemon identifies AMD GPUs and reports them, but does not apply Overdrive offsets — the feature was designed and tested only on NVIDIA hardware. If you have AMD hardware and would like to contribute, the detection path is in place.
+</Note>
+
+## NVML vs. nvidia-settings
+
+Pyren tries **NVML first** on every offset request. NVML is the correct path for modern NVIDIA drivers on Wayland desktops:
+
+- Works without an Xorg server.
+- Does not require the `Coolbits` option in `xorg.conf`.
+- Read and written directly via `libnvidia-ml`, so no subprocess is spawned and the result is read back immediately.
+
+`nvidia-settings` is used only as a fallback when the driver is too old to expose the NVML clock-offset API. On a Wayland session, `nvidia-settings -q screens` finds no NVIDIA screen, so the `Coolbits` path is unavailable there regardless.
+
+Verified on hardware: a +50 MHz core offset and a +400 MHz memory transfer rate offset were both applied through NVML, read back off the card directly, and reverted cleanly.
+
+## Consent requirement and automatic revert
+
+<Steps>
+
+### Review the proposed offset
+
+Before any offset is applied, Pyren presents the target values and explains what will happen. No clock is modified at this stage.
+
+### Confirm to apply
+
+You must explicitly confirm before the offset is written to the card. The daemon arms a revert timer at this point.
+
+### Confirm again to keep
+
+After the offset is applied, a second confirmation window opens. If you do not confirm within the timeout, the daemon reverts the offset automatically — `NotConfirmed` is logged and the card returns to stock.
+
+### Fault-triggered revert
+
+Independently of the confirmation timer, the daemon polls for XID critical errors via `nvmlEventTypeXidCriticalError`. If the driver reports a fault while the offset is in force, the daemon reverts immediately — `FaultReported` is logged — without waiting for the timer to expire. If both conditions are true in the same polling tick, the timer takes precedence since "you never confirmed this" is the older fact.
+
+</Steps>
+
+A revert also disarms the watchdog, so a failed revert (card removed, driver crash) does not trigger a second write attempt on the next tick.
+
+## Minimum clock frequency
+
+In addition to an offset, you can set a minimum core or memory clock. This pins a lower bound on the frequency the driver will use even at low load — useful for latency-sensitive workloads that suffer from the card idling down.
+
+## Graphics switching (MUX)
+
+Pyren reads and writes the graphics MUX mode through the patched `hp-wmi` driver's own `gpu_mux_mode` sysfs file:
+
+| Mode | Description |
+|---|---|
+| `integrated` | Only the iGPU drives the display. |
+| `hybrid` | The iGPU drives the display; the dGPU handles workloads (Optimus/PRIME). |
+| `discrete` | Only the dGPU drives the display. |
+
+MUX switching typically takes effect after the next reboot. The current mode is always read from the hardware at startup rather than assumed from a saved config.

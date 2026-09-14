@@ -1,0 +1,157 @@
+---
+title: "Build and Install Pyren from Source"
+sidebarTitle: "From Source"
+description: "Clone the Pyren repository, install build dependencies (Rust, Bun, WebKitGTK), build all three workspaces, and install from the resulting tarball."
+---
+
+Building from source is the right path for contributors or users who want to track the latest code on `main`. The project is three separate programs — the daemon, the OSD widget, and the app — each in its own workspace, with its own build tool and runtime requirements. This guide covers both the quick path via `tools/release.sh` and the full manual sequence.
+
+## Prerequisites
+
+Install the following toolchains and libraries before building.
+
+### Rust and Cargo
+
+Install Rust using `rustup`:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The daemon and OSD widget are plain `cargo build --release` targets and have no extra system dependencies beyond the libraries below.
+
+### Bun
+
+The app workspace uses [Bun](https://bun.sh) as its package manager and dev runner:
+
+```sh
+curl -fsSL https://bun.sh/install | bash
+```
+
+Then add the following to your shell's rc file (`~/.bashrc`, `~/.zshrc`, etc.):
+
+```sh
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+```
+
+### System Libraries
+
+**WebKitGTK** is required to compile `app/src-tauri` (Tauri's Linux webview). **GTK 4** and **gtk4-layer-shell** are required to compile the OSD widget (`osd/`).
+
+<CodeGroup>
+
+```sh Arch / CachyOS
+# WebKitGTK and Tauri build dependencies
+sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file openssl \
+  appmenu-gtk-module gtk3 libappindicator-gtk3 librsvg
+
+# GTK 4 and layer-shell (required for the OSD widget only)
+sudo pacman -S --needed gtk4 gtk4-layer-shell
+```
+
+```sh Debian / Ubuntu
+# gtk4-layer-shell-dev is not packaged before Debian testing / Ubuntu 25.10.
+# On Ubuntu 24.04 and earlier, build gtk4-layer-shell from source:
+# https://github.com/wmww/gtk4-layer-shell#building-from-source
+# The CI recipe in .github/workflows/ci.yml is a working reference.
+sudo apt install libwebkit2gtk-4.1-dev libgtk-4-dev libgtk4-layer-shell-dev \
+  build-essential curl wget file libssl-dev \
+  libappindicator3-dev librsvg2-dev
+```
+
+</CodeGroup>
+
+For other distributions, see the [Tauri Linux prerequisites](https://tauri.app/start/prerequisites/#linux).
+
+## Recommended Path: `tools/release.sh`
+
+The simplest and most reliable way to build from a clone is `tools/release.sh`. It builds every part in the correct order and produces a ready-to-install archive in `dist/`:
+
+```sh
+tools/release.sh
+```
+
+Once the build finishes, install exactly as you would from a downloaded release:
+
+```sh
+tar xzf dist/pyren-*-x86_64-linux.tar.gz
+cd pyren-*/
+sudo ./install.sh
+newgrp pyren    # or log out and back in
+```
+
+See [Install from a Release](/installation/install-from-release) for the full post-install steps, installer options, and what gets placed where.
+
+## Manual Build
+
+If you prefer to build each workspace by hand, follow these steps.
+
+<Warning>
+  The app **must** be built through `tauri build` (or `cargo build --release --features custom-protocol`) — not a plain `cargo build`. A plain `cargo build` compiles the Rust shell but leaves the SvelteKit frontend out of the binary, so the resulting executable ships an empty UI and expects a development server. There is no error at build time; the binary simply does not work as expected.
+</Warning>
+
+<Steps>
+  <Step title="Build the daemon">
+    ```sh
+    (cd daemon && cargo build --release)
+    ```
+
+    Produces `daemon/target/release/pyren-daemon`, `pyren-ctl`, and `pyren-check`.
+  </Step>
+
+  <Step title="Build the OSD widget">
+    ```sh
+    (cd osd && cargo build --release)
+    ```
+
+    Produces `osd/target/release/pyren-osd`. Requires GTK 4 and gtk4-layer-shell.
+  </Step>
+
+  <Step title="Build the app">
+    ```sh
+    (cd app && bun install && bun run tauri build --no-bundle)
+    ```
+
+    This runs `bun install` to pull in the frontend dependencies (first time only), then `tauri build --no-bundle`. The `--no-bundle` flag produces a single self-contained ELF binary without requiring `.deb`/`.rpm`/AppImage packaging tools. The build compiles roughly 490 crates on first run and typically takes 10–20 minutes; subsequent builds reuse the cache.
+
+    <Warning>
+      Do not substitute `cargo build --release` here. Only `tauri build` (or the equivalent `cargo build --release --features custom-protocol`) enables the `tauri/custom-protocol` feature that embeds the compiled frontend into the binary. Without it, the app opens a blank window and looks for a Vite dev server.
+    </Warning>
+  </Step>
+
+  <Step title="Run the installer">
+    With all three workspaces built, run the installer from the repo root:
+
+    ```sh
+    sudo install/install.sh
+    ```
+
+    This is the same `install.sh` used by the release tarball. See [Install from a Release](/installation/install-from-release) for the full list of installer options and what gets placed where.
+  </Step>
+</Steps>
+
+## Development Run (Without Installing)
+
+For day-to-day development you can run all three components together without installing anything. From the `app/` directory:
+
+```sh
+cd app
+bun run dev:all
+```
+
+This builds the daemon and widget, restarts them, and starts the Tauri dev server for the app. It asks for `sudo` once to restart the daemon's service. Open three terminals if you prefer to run each component separately:
+
+| Terminal | Command | What it does |
+|---|---|---|
+| 1 | `cd daemon && cargo run -p pyren-daemon` | Runs the daemon on `/tmp/pyren-daemon.sock` |
+| 2 | `cd osd && cargo run -- --show` | Runs the OSD widget |
+| 3 | `cd app && bun run tauri dev` | Runs the Vite dev server + Tauri shell |
+
+<Note>
+  `bun run tauri dev` only rebuilds `app/src-tauri`. Changes to `daemon/` or `osd/` require a separate `cargo build` and a service restart — they are not part of the app's dev loop. `bun run dev:all` handles this automatically.
+</Note>
+
+## Further Reading
+
+For the full development workflow — running individual components, working with the daemon socket, testing power profiles, and CI — see the [Development Setup](/contributing/development-setup) guide.

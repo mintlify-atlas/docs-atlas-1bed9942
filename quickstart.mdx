@@ -1,47 +1,118 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with Pyren in 5 minutes"
+sidebarTitle: "Quickstart"
+description: "Download the Pyren release tarball, run the installer, add yourself to the pyren group, and launch the app — all in under 5 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through installing Pyren from the latest release tarball, verifying the install, and confirming that your hardware is recognised. By the end you will have the daemon running as a systemd service, the desktop app available from your application menu, and `pyren-ctl status` returning a live status report from the daemon.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  Pyren needs **WebKitGTK** (`webkit2gtk-4.1`), **GTK 4**, and **gtk4-layer-shell** to run. On current Arch Linux, Fedora, and Debian/Ubuntu the installer handles these dependencies for you. On other distributions it will print the exact command to install them manually (for example, on Arch: `sudo pacman -S --needed webkit2gtk-4.1 gtk4 gtk4-layer-shell librsvg`).
+</Note>
 
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Installation
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+### Download the release tarball
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Go to the [Releases page](https://github.com/mglourido/PYREN/releases) and download the latest `pyren-<version>-x86_64-linux.tar.gz`. Then extract and enter the directory:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+```sh
+tar xzf pyren-*-x86_64-linux.tar.gz
+cd pyren-*/
+```
+
+### (Optional) Verify the checksum
+
+Run this from inside the extracted directory, which also contains the `SHA256SUMS` file:
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+All entries should report `OK`. If any file fails, re-download the tarball before continuing.
+
+### Run the installer
+
+```sh
+sudo ./install.sh
+```
+
+The installer:
+- Places all five binaries (`pyren`, `pyren-daemon`, `pyren-ctl`, `pyren-check`, `pyren-osd`) under `<prefix>/bin/` (default: `/usr/local/bin/`)
+- Installs the patched `hp-wmi` driver sources to `/usr/share/pyren/driver/`
+- Enables and starts **`pyren-daemon.service`** as a systemd system service
+- Creates the `pyren` group and adds your user to it
+- Places the `.desktop` entry and app icon so the app appears in your launcher
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  Run `./install.sh --dry-run` first (no `sudo` needed) to preview every action the installer will take — files written, systemd units enabled, group memberships changed — without modifying anything.
 </Tip>
+
+### Add yourself to the pyren group
+
+The daemon's Unix socket is owned by the `pyren` group (`0660`). Your session needs that group membership before the app or `pyren-ctl` can reach the daemon:
+
+```sh
+newgrp pyren       # takes effect for the current shell immediately
+```
+
+Or log out and log back in to apply the group to all new sessions. Until the group is active, any attempt to connect will fail with a permission error.
+
+<Note>
+  `newgrp pyren` only applies to the shell it is run in. For the group to be available everywhere — including your desktop app launcher — log out and back in after the install.
+</Note>
+
+### (Optional) Enable the OSD widget service
+
+The `pyren-osd` widget provides a keyboard-triggered overlay for fast profile switching without opening the main app. It ships as a systemd user service:
+
+```sh
+systemctl --user enable --now pyren-osd.service
+```
+
+You can skip this step and enable it later from the **Settings** panel inside the app.
+
+### Launch Pyren
+
+Open **Pyren** from your application menu, or run it directly:
+
+```sh
+pyren
+```
+
+If your launcher doesn't list Pyren immediately after installing, it may be holding a cached app list. Log out and back in, or clear the cache for your launcher (e.g. `rm ~/.cache/rofi3.druncache` for Rofi, `rm ~/.cache/wofi-*` for Wofi). Running `pyren` from a terminal is unaffected by the cache.
+
+</Steps>
+
+## Verify the install
+
+After launching the app, run these two commands in a terminal to confirm everything is working:
+
+**Check the running daemon's state:**
+
+```sh
+pyren-ctl status
+```
+
+This prints a single-screen summary of every module the daemon has loaded — current power profile, fan mode, active fan speed, graphics mode, and what the daemon believes the machine can do. If the daemon isn't running or the socket isn't reachable, this command reports why.
+
+**Check hardware compatibility:**
+
+```sh
+pyren-check
+```
+
+`pyren-check` is a standalone probe that reads your hardware and reports which controls are available on this machine — fans, power profiles, and the RGB lightbar. It exits with a code that reflects the result (see [Hardware Compatibility](/hardware-compatibility) for the full details). Run this whenever you want a quick confirmation that the daemon's view of your machine is correct.
+
+## Uninstall
+
+To remove Pyren:
+
+```sh
+sudo ./uninstall.sh              # removes binaries, services, driver sources, icons
+sudo ./uninstall.sh --purge      # also removes /etc/pyren and ~/.config/pyren
+```
+
+The `pyren` group is left in place — removing a group that user accounts still belong to is not the installer's responsibility.

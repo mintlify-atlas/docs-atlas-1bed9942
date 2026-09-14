@@ -1,0 +1,151 @@
+---
+title: "Install Pyren from a Release Tarball"
+sidebarTitle: "From Release"
+description: "Download the latest Pyren release tarball, verify the checksum, run the installer, and join the pyren group to get the app running on your Linux laptop."
+---
+
+Installing from a release tarball is the recommended path for end users. You download a pre-built archive from the GitHub Releases page, run a single installer script with `sudo`, and the daemon, app, widget, and both CLIs land in the right places — systemd units enabled, the `pyren` group created, and you added to it. No build toolchain required.
+
+## Requirements
+
+Pyren requires a small set of runtime libraries. On most desktops these are already present; the installer will attempt to install any that are missing on Arch, Fedora, and Debian/Ubuntu automatically, and print the exact command if it cannot.
+
+| Dependency | Purpose | Required? |
+|---|---|---|
+| `webkit2gtk-4.1` (WebKitGTK) | Renders the app's frontend | **Required** |
+| `gtk4` | GTK 4 toolkit | **Required** |
+| `gtk4-layer-shell` | Layer-shell support for the OSD widget | **Required** |
+| Linux kernel with `hp-wmi` | Fan and hardware control interface | **Required** |
+| `acpi_call` | Lightbar control and fan-cleaner feature | Optional |
+| NVIDIA driver (`libnvidia-ml`) | GPU tuning support | Optional |
+
+If you need to install the runtime libraries manually, use the command for your distribution:
+
+<CodeGroup>
+
+```sh Arch / CachyOS
+sudo pacman -S --needed webkit2gtk-4.1 gtk4 gtk4-layer-shell librsvg
+```
+
+```sh Fedora
+# The installer prints the exact dnf command on failure
+sudo dnf install webkit2gtk4.1 gtk4 gtk4-layer-shell
+```
+
+```sh Debian / Ubuntu
+# gtk4-layer-shell-dev is not packaged before Debian testing / Ubuntu 25.10;
+# on older releases, the installer prints what to do.
+sudo apt install libwebkit2gtk-4.1-dev libgtk-4-dev libgtk4-layer-shell-dev
+```
+
+</CodeGroup>
+
+<Note>
+  Where a laptop's board is missing from the stock `hp-wmi` tables, Pyren's installer (inside the app, or via `pyren-ctl`) can build a patched module from the sources placed under `/usr/share/pyren/driver`.
+</Note>
+
+## Installation Steps
+
+<Steps>
+  <Step title="Download the release tarball">
+    Go to the [Pyren Releases page](https://github.com/mglourido/PYREN/releases) and download the latest `pyren-<version>-x86_64-linux.tar.gz`. Then extract it:
+
+    ```sh
+    tar xzf pyren-*-x86_64-linux.tar.gz
+    cd pyren-*/
+    ```
+  </Step>
+
+  <Step title="Verify the checksum (optional)">
+    Before running the installer, you can confirm the archive has not been tampered with. Run this from the directory that also contains the `SHA256SUMS` file:
+
+    ```sh
+    sha256sum -c SHA256SUMS
+    ```
+
+    If all files report `OK`, the download is intact.
+  </Step>
+
+  <Step title="Run the installer">
+    ```sh
+    sudo ./install.sh
+    ```
+
+    The installer writes the binaries, systemd units, driver sources, desktop entry, and icons to their target paths (see [What it installs](#what-it-installs) below). It also creates the `pyren` group and adds your user to it. Root is only needed to write under `/usr` and `/etc`.
+
+    <Tip>
+      Run `./install.sh --dry-run` first to preview every action the installer will take without actually making any changes. This is especially useful if you want to use a non-default prefix or driver directory.
+    </Tip>
+  </Step>
+
+  <Step title="Join the pyren group">
+    The `pyren` group is what grants the app and `pyren-ctl` access to the daemon's socket. Until your session carries the group membership, you will see a permission error.
+
+    ```sh
+    newgrp pyren
+    ```
+
+    <Note>
+      `newgrp pyren` applies the group membership to one shell only. For it to take effect everywhere — including your application launcher — log out and back in instead. The `newgrp` shortcut is handy for testing immediately after install without a full logout.
+    </Note>
+  </Step>
+
+  <Step title="Enable the OSD service (optional)">
+    The performance-key widget (`pyren-osd`) runs as a user systemd service. Enable it if you want the on-screen display to start automatically:
+
+    ```sh
+    systemctl --user enable --now pyren-osd.service
+    ```
+
+    The main Pyren app will also start the widget automatically when it is launched.
+  </Step>
+
+  <Step title="Launch Pyren">
+    Open **Pyren** from your application menu, or run it directly from a terminal:
+
+    ```sh
+    pyren
+    ```
+
+    To verify what your laptop supports, run:
+
+    ```sh
+    pyren-check
+    ```
+
+    To see what the running daemon currently has switched on:
+
+    ```sh
+    pyren-ctl status
+    ```
+
+    <Note>
+      If Pyren does not appear in your launcher immediately after installing, your launcher may be holding a cached application list. Log out and back in, or clear the cache manually — for example `rm ~/.cache/rofi3.druncache` for Rofi or `rm ~/.cache/wofi-*` for Wofi. Running `pyren` from a terminal is unaffected.
+    </Note>
+  </Step>
+</Steps>
+
+## Installer Options
+
+| Option | Description |
+|---|---|
+| `sudo ./install.sh` | Install everything under the default prefix (`/usr/local`) |
+| `sudo ./install.sh --prefix /usr` | Install under `/usr` instead of `/usr/local` |
+| `sudo ./install.sh --no-service` | Place all files, but do not create systemd units or the `pyren` group |
+| `sudo ./install.sh --driver-dir D` | Install driver sources to `D` instead of `/usr/share/pyren/driver`. If you use this, point the daemon at the new location with `PYREN_DRIVER_DIR` via `systemctl edit pyren-daemon` |
+| `./install.sh --dry-run` | Print every action the installer would take; change nothing |
+
+## What it Installs
+
+The installer places files at the following paths. `<prefix>` defaults to `/usr/local` and is changed with `--prefix`.
+
+| Path | Contents |
+|---|---|
+| `<prefix>/bin/{pyren,pyren-daemon,pyren-ctl,pyren-check,pyren-osd}` | The five binaries |
+| `/usr/share/pyren/driver/` | Patched `hp-wmi` kernel module sources (fixed path regardless of `--prefix`) |
+| `<prefix>/share/applications/pyren.desktop` | The application-menu entry |
+| `<prefix>/share/icons/hicolor/*/apps/pyren.*` | The app icon at all standard sizes |
+| `<prefix>/lib/systemd/user/pyren-osd.service` | The OSD widget's user service |
+| `/etc/systemd/system/pyren-daemon.service` | The daemon's system service (written by `pyren-daemon --install-service`, not copied, so it always references the correct binary path) |
+
+In addition, the installer runs `groupadd -f pyren` to create the daemon socket group and `usermod -aG pyren <you>` to add your user to it.

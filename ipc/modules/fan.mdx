@@ -1,0 +1,352 @@
+---
+title: "fan Module: Fan Modes, Curves, and Calibration"
+sidebarTitle: "fan"
+description: "The fan module controls fan speed via Auto, Max, Manual, and Curve modes, exposes per-fan RPM tachometers, runs floor calibration, and manages the fan cleaning cycle."
+---
+
+The `fan` module drives the `hp-wmi` PWM interface and supports four operating modes: Auto (firmware curve), Max (maximum configured RPM), Manual (fixed PWM percentage the user sets), and Curve (user-defined temperature/speed point pairs). Not every machine can do every mode — the kernel driver exposes two independent sysfs files and their presence determines what is possible. Before offering any fan controls, read `fan.getStatus`'s `capabilities` object to know what this board actually supports.
+
+## Methods
+
+| Method | Params | Result | Status |
+|---|---|---|---|
+| `fan.getStatus` | none | Full status object (see below) | ✅ Implemented — read-only, no privileges needed |
+| `fan.setMode` | `{ "mode": "auto"\|"max"\|"manual"\|"curve", "pwm"?: 0-255 }` | Status object | ✅ Implemented — needs root |
+| `fan.setCurve` | `{ "curve": [{ "tempC": number, "percent": number }], "interpolation"?: "smooth"\|"discrete", "referenceSensor"?: "cpu"\|"gpu", "profile"?: string }` | Status object | ✅ Implemented |
+| `fan.setRestoreOnStart` | `{ "enabled": bool }` | Status object | ✅ Implemented |
+| `fan.setKeepDriverFloor` | `{ "enabled": bool }` | Status object | ✅ Implemented — needs root; writes `min_rpm_override` |
+| `fan.clearFloorNotices` | none | Status object | ✅ Implemented — drops the automatic floor-raise log |
+| `fan.calibrate` | `{ "seconds"?: 10-120 }` | Calibration report (see below) | ✅ Implemented — needs root; **blocks and spins the fans** |
+| `fan.probeSpeedControl` | `{ "seconds"?: 8-60 }` | Speed probe report (see below) | ✅ Implemented — needs root; **blocks and spins the fans** |
+| `fan.diagnose` | `{ "allowWrites": bool }` | Full self-test report (see below) | ✅ Implemented |
+| `fan.cleanerStatus` | `{ "refresh"?: bool }` | Cleaner status object | ✅ Implemented — read-only (`refresh` puts two ACPI queries) |
+| `fan.startCleaning` | `{ "speed"?: 10-39, "seconds"?: 5-60, "force"?: bool }` | Cleaner status object | ✅ Implemented — needs root and `acpi_call`; **reverses the fans** |
+| `fan.stopCleaning` | none | Cleaner status object | ✅ Implemented — idempotent |
+| `fan.setCleanerConfig` | `{ "seconds"?: 5-60, "speed"?: 10-39 \| null }` | Cleaner status object | ✅ Implemented |
+
+Every write returns the same status object that `fan.getStatus` does, so a caller never has to follow a write with a separate read.
+
+---
+
+## Fan modes
+
+| Mode | Behaviour |
+|---|---|
+| `auto` | The firmware's own temperature-to-RPM curve; no daemon involvement after the mode is set |
+| `max` | Fans held at maximum configured RPM; requires only `switchMode` capability |
+| `manual` | Fixed PWM percentage (0-255) the user sets; requires `setSpeed` capability |
+| `curve` | Daemon-driven temperature/speed curve; requires `setSpeed` capability |
+
+### `fan.setMode` examples
+
+```json
+// Switch to max speed
+{ "id": 1, "module": "fan", "method": "setMode",
+  "params": { "mode": "max" } }
+
+// Set a fixed PWM of 128 (50 %)
+{ "id": 1, "module": "fan", "method": "setMode",
+  "params": { "mode": "manual", "pwm": 128 } }
+
+// Activate a user-defined curve
+{ "id": 1, "module": "fan", "method": "setMode",
+  "params": { "mode": "curve", "points": [
+    { "tempC": 40, "pwmPercent": 20 },
+    { "tempC": 60, "pwmPercent": 50 },
+    { "tempC": 85, "pwmPercent": 100 }
+  ] } }
+```
+
+<Warning>
+**`notCapable` and `permissionDenied` are different errors — do not conflate them.**
+
+- `notCapable` means the hardware cannot do this, ever, on this board. Board `8D2F` has no `pwm1`, so `manual` will never work there regardless of privilege. **Do not offer "run as administrator"** for a `notCapable` response — no privilege makes it work.
+- `permissionDenied` means the daemon is running unprivileged. The exact same call works fine against a root daemon — offering to elevate is correct here.
+- `invalidParams` means the call itself was wrong (e.g., `pwm: 300`). Neither privilege nor different hardware helps.
+
+Read `capabilities` and hide controls the hardware cannot offer, rather than discovering their absence from a failed write.
+</Warning>
+
+Two additional things a client must not assume:
+
+- **`pwm = 0` is not "fans off".** The driver reads 0 as `HP_FAN_SPEED_AUTOMATIC` and hands the fans back to the firmware; the daemon clamps any commanded speed to at least 1.
+- **`mode` is what is actually in force**, which after a daemon restart is what the *hardware* was found in — not what the config file says — unless `restoreModeOnStart` is on.
+
+---
+
+## `fan.getStatus` — the status object
+
+```json
+{
+  "driverInstalled": true,
+  "capabilities": { "switchMode": true, "setSpeed": false },
+  "cpuTempC": 38,
+  "gpuTempC": null,
+  "fanRpm": 2097,
+  "fans": [
+    { "key": "cpu", "rpm": 2097, "isReverse": false },
+    { "key": "gpu", "rpm": 3100, "isReverse": false }
+  ],
+  "isReverse": false,
+  "mode": "auto",
+  "pwm": null,
+  "targetPwm": null,
+  "manualPwm": 128,
+  "curve": [{ "tempC": 40, "percent": 20 }],
+  "interpolation": "smooth",
+  "referenceSensor": "cpu",
+  "referenceSensorInUse": "cpu",
+  "gpuSensorAvailable": false,
+  "restoreModeOnStart": false,
+  "cleaning": false,
+  "fanMaxRpm": null,
+  "fan1MaxRpm": null,
+  "fan2MaxRpm": null,
+  "fanMinRpm": null,
+  "driverMinRpm": null,
+  "pyrenMinRpm": null,
+  "keepDriverFloor": true,
+  "floorOverrideSupported": false,
+  "stopBelowPwm": 0,
+  "fansReleased": false,
+  "floorNotices": [],
+  "recentFanStalls": 0,
+  "calibrating": false,
+  "error": null,
+  "saved": true,
+  "saveError": null
+}
+```
+
+### Capabilities
+
+`capabilities` is what this machine's driver actually exposes:
+
+| Field | `true` when | Modes it enables |
+|---|---|---|
+| `switchMode` | `pwm1_enable` exists | `auto`, `max` |
+| `setSpeed` | `pwm1` exists | `manual`, `curve` |
+
+The driver only creates `pwm1` for boards in its feature table. Board `8D2F` has `switchMode: true` and `setSpeed: false` — a client must read this and hide manual/curve controls rather than offer them and get a `notCapable` error.
+
+### Per-fan RPM
+
+`fanRpm` is `max(fan1, fan2)`, decoded through the hp-wmi reverse-bit encoding (raw values ≥ 12800 are remapped). `fans` breaks the same reading out per cooler — one entry per `fan?_input` file that exists, `key` being `"cpu"` for `fan1` and `"gpu"` for `fan2`. Single-fan machines report one entry; a machine with no hp-wmi hwmon reports `[]`.
+
+### Fan floor and stall protection
+
+There are two floors available:
+
+| Field | Meaning |
+|---|---|
+| `driverMinRpm` | The upstream driver's floor: the slowest entry in its fan table; it clamps every manual speed |
+| `pyrenMinRpm` | One 100 rpm step above the slowest speed Pyren confirmed the fans held stall-free during calibration (`null` until calibrated) |
+| `fanMinRpm` | Whichever floor is in force (`keepDriverFloor` chooses) |
+
+`keepDriverFloor` (on by default) selects which floor is active. Lifting the driver's clamp requires Pyren's driver patch (`floorOverrideSupported`).
+
+When Pyren's floor is in force, the daemon watches the tachometer on every control tick. Three stalls in half an hour raise the stored held-speed by 100 rpm, lift Pyren's floor with it, and append a notice to `floorNotices` (newest first, capped at 5). Each notice carries `atUnixSecs`, `ageSecs`, `raisedFromRpm`, `raisedToRpm`, `stalls`, and `reachedDriverFloor`. The `fan.floorRaised` event on the event bus carries the same data for live clients.
+
+Below `fanMinRpm` a manual or curve speed hands the fans back to firmware (`fansReleased: true`); `mode` stays what the user chose. The fans return under daemon control a deadband (8/255) above the floor.
+
+### Curve reference sensor
+
+`referenceSensor` is the setting (`cpu` or `gpu`); `referenceSensorInUse` is what is actually being read right now (`null` when neither answers). They differ while the GPU is powered down.
+
+- `gpu` falls back to CPU whenever the card reports nothing. A GPU at 0 °C is powered down, not cold.
+- `cpu` **never** falls back to GPU. Someone who chose CPU and silently got GPU would see a machine nobody asked for.
+
+`gpuSensorAvailable` says whether a GPU sensor exists at all. A machine with integrated graphics only should show no sensor choice rather than a non-functional one.
+
+### One curve per power profile
+
+Each power profile has its own fan curve. `fan.getStatus` reports:
+
+- `curve` — the curve **in force** right now
+- `profileCurves` — every profile's stored shape, keyed by power mode name
+- `sharedCurve` — the fallback used when a profile has no curve of its own
+- `activeProfile` — the current power mode name (opaque string to this module)
+
+`fan.setCurve`'s `profile` names which curve to write. Omitted, it writes the curve for the currently active profile. `""` writes the shared fallback.
+
+---
+
+## `fan.calibrate`
+
+Measures the true maximum and minimum RPMs by running fans at `max`, watching the tachometer, keeping the peak, and restoring the original mode. The result gives the curve's hysteresis a real RPM reference rather than a guessed linear PWM→RPM mapping.
+
+Only `switchMode` is needed — `max` is a mode, not a speed — so calibration runs on boards like `8D2F` that cannot be given a speed percentage at all.
+
+```json
+{
+  "verdict":         "measured",
+  "fanMaxRpm":       3915,
+  "fan1MaxRpm":      3915,
+  "fan2MaxRpm":      3745,
+  "fanMinRpm":       1800,
+  "fanStableMinRpm": 700,
+  "baselineRpm":     2093,
+  "startedAtMax":    false,
+  "seconds":         12,
+  "settled":         true,
+  "restoredMode":    "auto",
+  "restoreError":    null,
+  "detail":          "3915 rpm, up from 2093 at idle, settled after 12s",
+  "pinned": {
+    "ok":     true,
+    "detail": "wrote cpu_max_rpm_measured=39 gpu_max_rpm_measured=37 to /etc/modprobe.d/pyren-hp-wmi.conf"
+  },
+  "samples": [
+    { "atSecs": 1, "fan1Rpm": 2400, "fan2Rpm": 2230, "isReverse": false }
+  ],
+  "status": { "…": "the usual fan status object" }
+}
+```
+
+`verdict` is one of `measured`, `noReading`, `didNotRespond`, or `reverse`.
+
+Five rules a client should know:
+
+1. **The call blocks** for up to `seconds` (default 30, clamped to 10–120). `getStatus` still answers from another connection and reports `calibrating: true`.
+2. **It ends early when the reading settles.** `seconds` is the ceiling, not the target. `settled` says which happened.
+3. **A run that measured nothing stores nothing.** `didNotRespond` exists for machines that accept `max` and ignore it — recording idle speed as the ceiling would be worse than having no calibration at all.
+4. **The original mode is always restored**, including on failure. If it cannot be (e.g., `manual` on a board now lacking `pwm1`), fans go to `auto` and `restoreError` says so.
+5. **The measurement is handed to the driver** via `/etc/modprobe.d/pyren-hp-wmi.conf`. `pinned` reports whether that write succeeded. The calibration itself succeeds either way; the driver ceiling takes effect at the next `hp-wmi` load. Use `installer.apply` with `action: "pinFanCeiling"` to apply it immediately.
+
+`samples` is the one-reading-per-second trace. It is kept as evidence for the verdict, not decoration.
+
+---
+
+## `fan.probeSpeedControl`
+
+Answers the question that `capabilities.setSpeed` only *looks* like it answers: **does writing `pwm1` actually move the fans?**
+
+Board `8D2F` with the patched driver exposes `pwm1`, accepts every write, but the embedded controller goes on running the firmware's own curve — and `pwm1` reads back the *measured* speed scaled to 0–255, so a naive round-trip test passes by construction.
+
+The probe commands a speed the fans are not at, watches the tachometer, and restores the previous mode.
+
+```json
+{
+  "verdict":      "honoured",
+  "baselineRpm":  1200,
+  "aimingUp":     true,
+  "targetPwm":    200,
+  "expectedRpm":  4156,
+  "reachedRpm":   1300,
+  "responseRpm":  100,
+  "seconds":      15,
+  "samples":      [{ "atSecs": 1, "rpm": 900, "isReverse": false }],
+  "restoredMode": "curve",
+  "restoreError": null,
+  "detail":       "pwm1 = 200 was accepted and changed nothing: …",
+  "status":       { "…": "the usual fan status" }
+}
+```
+
+`verdict` is one of `honoured`, `ignored`, `noReading`, or `noChannel`.
+
+The answer is stored in `fan.json`'s `speedControl` field and reported in `fan.getStatus`. An `ignored` result sets `capabilities.setSpeed: false` from then on; `fan.setMode` refuses `manual`/`curve` with `fan.err.speedIgnored` — a deliberately different error from "there is no `pwm1`". One sends you to install a driver; the other must not, because the driver is already there.
+
+`noReading` and `noChannel` settle nothing and never overwrite a stored answer. An untested machine is offered speed control.
+
+---
+
+## `fan.diagnose`
+
+The fan-control self-test. Replaced installing the driver as the first response to "is the driver right?" because manual fan control is upstream in recent kernels, and proving the stock driver works is more useful than replacing it.
+
+```json
+{
+  "verdict":        "fullControl",
+  "summary":        { "key": "diagnostics.summary.monitoringOnly", "text": "…" },
+  "driverNotice":   { "key": "diagnostics.driverNotice.noPwm", "params": { "hint": "…" }, "text": "…" },
+  "wroteToHardware": false,
+  "checks": [
+    { "id":     "pwm1",
+      "title":  { "key": "diagnostics.checks.pwm1.title", "text": "PWM channel" },
+      "status": "pass",
+      "detail": { "key": "diagnostics.checks.pwm1.ok", "params": { "value": 128 }, "text": "pwm1 = 128 (0-255)" },
+      "remedy": null }
+  ]
+}
+```
+
+`verdict` is one of `fullControl`, `monitoringOnly`, or `unsupported`. Check `status` values are `pass`, `warn`, `fail`, or `skip`. All user-facing strings (`summary`, `driverNotice`, check `title` / `detail` / `remedy`) are `Msg` objects — render `key` + `params` if you have a translation catalog, otherwise show `text`.
+
+Checks by `id`: `hp-wmi`, `hwmon`, `fan1`, `fan2`, `pwm1`, `pwm1_enable`, `pwm-write`, `pwm-effect`, `hwmon-attrs`, `kernel-log`, `platform-profile`, `cpu-temp`, `acpi-call`, `fan-cleaner`.
+
+**Every check is read-only unless `allowWrites: true`**, which needs root and opts into:
+
+- `pwm-write` — writes `pwm1` a value the channel is demonstrably not at, for a real round-trip test. In force for milliseconds; the previous mode is restored afterwards.
+- `pwm-effect` — fires a `fan.probeSpeedControl` run; fans briefly change speed.
+
+Both report `skip` when run unprivileged or not requested; `wroteToHardware` mirrors `allowWrites`.
+
+`driverNotice` only appears when it would help: an HP machine with no `pwm1` is told to try a newer kernel *first*, then the patched out-of-tree driver.
+
+---
+
+## Fan cleaning mode
+
+The fan cleaner spins fans **backwards** to dislodge dust, ported from the original `_cleaner.py`. It bypasses the kernel driver entirely, using HP's `SECU` buffer protocol over `/proc/acpi/call`.
+
+<Warning>
+**Reverse spin is cooling switched off, not turned down.** For the entire duration of a cleaning cycle the machine has no working fans. Do not start a cycle while the machine is hot (above `maxStartTempC`, default 70 °C). Both `running` and `transitioning` mean *the fans are not yours*; a client that reads `transitioning` as idle will offer a second cycle in the middle of the first.
+</Warning>
+
+```json
+{
+  "supported":          true,
+  "generation":         "modern",
+  "capabilities":       { "cpu": true, "gpu": true, "fan3": false,
+                          "cpuSpeed": 37, "gpuSpeed": 39, "fan3Speed": 0 },
+  "answered":           true,
+  "unreachable":        null,
+  "acpiCallLoaded":     true,
+  "acpiCallInstalled":  true,
+  "detail":             { "key": "fan.cleaner.probe.modern", "params": { "fans": "the CPU fan and the GPU fan" }, "text": "…" },
+  "running":            true,
+  "transitioning":      false,
+  "secondsRemaining":   22,
+  "secondsTotal":       30,
+  "speed":              37,
+  "fansReversed":       true,
+  "durationSecs":       30,
+  "configuredSpeed":    null,
+  "maxStartTempC":      70,
+  "cpuTempC":           41,
+  "error":              null
+}
+```
+
+`speed` and `configuredSpeed` are in **hundreds of RPM** (37 → ~3700 rpm). `null` means use whatever the firmware has configured for itself — distinct from "unset": `setCleanerConfig` treats an explicit `null` as a value and an absent field as "leave it alone".
+
+### Three reasons to be unavailable
+
+**Failing to ask is not being told no.** Distinguish these three states:
+
+| `supported` | `unreachable` | Meaning |
+|---|---|---|
+| `false` | `answered: true` | The firmware was asked and this machine has no fan cleaner. A fact with no remedy |
+| `false` | set | The question could not be put: no `acpi_call`, or daemon not root. `unreachable` says which; both have fixes |
+| — | — | `acpiCallInstalled` without `acpiCallLoaded` means the package is installed but not yet loaded; `modprobe` is the fix |
+
+A missing `acpi_call` returns a `failed` error (with the package name), never `notCapable`. Reporting a missing kernel module as a permanent hardware limit would hide a working fan cleaner behind an install nobody was told to do.
+
+### `startCleaning` behaviour
+
+- Blocks only for the **braking step** while the blades slow to a stop; returns with the countdown running.
+- The cycle clock starts when reverse spin begins, not when the call arrives. Braking time is not charged against the configured duration.
+- A cycle found still running at daemon startup is ended automatically (the one place the fan module touches hardware without being asked).
+- Stopping is a ramp: speed is stepped down by 5 with the direction bit still set, then the override is released. `stopCleaning` is idempotent.
+
+`force: true` skips only the `notCapable` refusal — not the temperature guard. It exists because capability decoding has not been confirmed against real firmware on every machine.
+
+### Two firmware generations
+
+| Generation | Protocol |
+|---|---|
+| `modern` ("CleanCreek") | 128-byte buffer with per-fan speed in hundreds of RPM and bit 7 meaning reverse; supports braking, engagement, and ramping |
+| `legacy` | 4-byte control buffer with one toggle bit — on or off, no speed and no ramp |
+
+Which generation a machine has is probed, never guessed from the model.

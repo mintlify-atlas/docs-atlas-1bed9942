@@ -1,0 +1,53 @@
+---
+title: "Pyren Configuration Files and Storage Paths"
+sidebarTitle: "Config Files"
+description: "Pyren stores configuration in JSON files under /etc/pyren (system) and ~/.config/pyren (user). Each module owns one namespace with atomic writes and corrupt-file handling."
+---
+
+Pyren uses a hand-rolled JSON config system implemented in the `pyren-config` crate (`daemon/crates/config`). Each hardware module owns exactly one namespace, persisted as a single JSON file. There is no layered config, no environment interpolation, and no third-party framework — the requirements are narrow, and what actually matters is failure behaviour: a daemon that can be killed at any moment needs writes that are safe to interrupt, and a config system that silently overwrites a corrupt file is worse than one that stops and tells you.
+
+## Config file locations
+
+| Path | Owner | Contents |
+|------|-------|----------|
+| `/etc/pyren/power.json` | Root daemon | Power mode, auto-switch settings, and per-mode tuning (PL1/PL2, turbo) |
+| `/etc/pyren/fan.json` | Root daemon | Fan mode, manual speed, hysteresis curve, smoothing window, `restoreModeOnStart` |
+| `~/.config/pyren/app.json` | Desktop app (user) | Application preferences: theme, language, widget settings |
+| `~/.config/pyren/ui.json` | Desktop app (user) | UI state: fan curve editor state, lighting configs, GPU mode selection |
+
+The desktop app shares the `pyren-config` crate with the daemon via a Cargo path dependency — the two remain separate workspaces and ship as separate binaries, but there is one config implementation, not two.
+
+## Fallback to the user directory
+
+<Note>
+When `/etc/pyren` is not writable, the daemon automatically falls back to `~/.config/pyren` for all its config files. Writability is determined by actually attempting to create the directory — not by checking for root — so this works correctly in containers, on immutable distros, and whenever `/etc` is read-only. This is what makes `cargo run -p pyren-daemon` usable for development without `sudo`.
+</Note>
+
+## Safety properties
+
+### Atomic writes
+
+Config is written by a daemon that can be killed at any moment. Writing in place risks producing a truncated file that fails to parse on next boot, which — for a daemon that controls fans — means silently reverting to defaults. To prevent this, every save goes to a temporary file first, is flushed to disk, and is then renamed over the target. A kill signal between the flush and the rename leaves the old file intact; a kill after the rename leaves only the complete new file.
+
+### Corrupt file handling
+
+A corrupt config file is **never overwritten silently**. When the daemon encounters a file it cannot parse, it moves the bad file to `<name>.json.bad` (for example, `/etc/pyren/fan.json.bad`) and records the path in both the daemon log and the app's Settings page. This ensures nothing is lost without you knowing about it.
+
+### Version checking
+
+A config file written by a *newer* build of the daemon is refused rather than parsed optimistically and written back in the older format. Downgrading Pyren must not silently destroy settings by round-tripping a newer file through an older schema.
+
+## `restoreModeOnStart`
+
+The `fan.json` file carries a `restoreModeOnStart` flag that controls the daemon's behaviour at startup:
+
+| Value | What happens at daemon start |
+|-------|------------------------------|
+| `true` | The daemon reads the last-used power mode from `power.json` and re-applies it before accepting any connections |
+| `false` | The daemon reads whatever power mode the firmware is currently set to and reports that — it changes nothing |
+
+This distinction matters after a reboot: with `restoreModeOnStart` disabled, the firmware's own default wins. With it enabled, the daemon restores your last-used mode, including any custom PL1/PL2 tuning stored in `power.json`.
+
+<Warning>
+Do not hand-edit config files while the daemon is running. The daemon holds an in-memory representation of its config and writes it back on change. Any edits you make to the file directly will be silently overwritten the next time the daemon saves. Use `pyren-ctl` or the app UI to make changes while the daemon is live. If you need to edit files directly, stop the daemon first with `sudo systemctl stop pyren-daemon`.
+</Warning>

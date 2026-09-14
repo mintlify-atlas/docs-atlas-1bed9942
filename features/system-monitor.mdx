@@ -1,0 +1,70 @@
+---
+title: "System Monitor: CPU, GPU, RAM and Process Stats"
+sidebarTitle: "System Monitor"
+description: "Pyren's system monitor shows live CPU, GPU, RAM, disk, network, temperatures, and top processes. Advanced mode adds per-core and per-GPU metrics with mini graphs."
+---
+
+Pyren's system monitor reads `/proc`, `/sys`, and DRM `fdinfo` — it has no dependency on HP-specific hardware. All metrics are available on any Linux machine, which also means the monitor UI can be developed and tested without an OMEN laptop present. The daemon keeps the previous sample to compute deltas, and the sampler is primed at construction so the very first call returns real numbers rather than zeros.
+
+## Metrics
+
+<CardGroup cols={2}>
+  <Card title="CPU" icon="microchip">
+    Overall usage %, per-core usage %, per-core clock (MHz), and package temperature. The package sensor is preferred; the daemon falls back to the hottest core, then `acpitz`.
+  </Card>
+  <Card title="Memory" icon="memory">
+    Total, used, and available RAM in GB, usage %, swap total, and swap used.
+  </Card>
+  <Card title="Temperatures" icon="thermometer">
+    All chips via lmsensors-style hwmon: `coretemp`, `k10temp`, `zenpower`, `amdgpu`, `nouveau`, `nvidia`, `radeon`, `acpitz`. Parts reading 0 °C are excluded (powered down, not cold).
+  </Card>
+  <Card title="Fans" icon="fan">
+    RPM from hwmon chips. On OMEN laptops, `fan1_input` maps to the CPU fan and `fan2_input` to the GPU fan.
+  </Card>
+  <Card title="Disks" icon="hard-drive">
+    Mount point, device path, filesystem type, total and free bytes. Deduplicated by device, so btrfs subvolumes and bind mounts show once at the shallowest mount point.
+  </Card>
+  <Card title="Network" icon="wifi">
+    Upload and download in Mbps, total and per-interface. Virtual interfaces (`lo`, `veth*`, `docker*`, `br-*`, `virbr*`, `vnet*`, `tap*`) are excluded.
+  </Card>
+  <Card title="GPUs" icon="display">
+    Name, driver, usage %, temperature (°C), VRAM used/total (MB), power draw (W), and current clock (MHz). NVIDIA data comes from `nvidia-smi`; AMD and Intel from DRM sysfs.
+  </Card>
+  <Card title="Processes" icon="list">
+    Top 12 processes by CPU usage. Each entry shows PID, name, CPU %, RAM (MB), and GPU %.
+  </Card>
+</CardGroup>
+
+## GPU details
+
+Pyren identifies GPUs by PCI slot. Integrated GPUs hang off the root bus (`0000:00:…`); a discrete card sits behind a PCIe bridge. On hybrid laptops both appear labeled separately.
+
+Intel iGPU utilization is read via the i915 perf PMU.
+
+<Info>
+Intel iGPU utilization requires `CAP_PERFMON`, which the daemon has when running as root (the normal production configuration). Without it, the iGPU usage field is `null` — which means "we were not permitted to ask," not "this GPU is idle." `system.getInfo`'s `privileges.perfEvents` field tells you whether the i915 PMU opened successfully.
+</Info>
+
+NVIDIA GPU metrics come from `nvidia-smi`. For AMD and other drivers, Pyren reads `gpu_busy_percent`, `mem_info_vram_*`, and `gt_act_freq_mhz` (or the Intel GT tile path) directly from DRM sysfs. Fields a driver does not expose are reported as `null`.
+
+## Process GPU accounting
+
+Per-process GPU percentage comes from the kernel's DRM `fdinfo` interface (`/proc/<pid>/fdinfo/<fd>`, `drm-engine-*` keys) — the same source used by `nvtop`. This covers `i915`, `xe`, and `amdgpu`.
+
+<Note>
+`gpuPercent: null` for a process means the driver **does not expose per-client GPU accounting** for that process — this is normal for NVIDIA's proprietary driver. It does not mean the process is idle. The UI draws `null` and a zero percentage differently so you can tell them apart.
+</Note>
+
+Two subtleties the implementation handles: multiple file descriptors can reference the same `drm-client-id` (each reporting that client's whole counter, not a fraction), and an engine can have multiple instances with shared nanoseconds.
+
+## Advanced mode
+
+Enabling Advanced mode in Settings adds:
+
+- **Per-core CPU graphs** — a small time-series graph for each physical core's usage and clock.
+- **Per-GPU detail** — expanded VRAM, power, and clock breakdown per card.
+- **Detailed RAM analysis** — breakdown of cached, buffered, and mapped memory usage.
+
+## Temperature units
+
+All temperatures are displayed in either **Celsius** or **Fahrenheit**, switchable in Settings. The unit preference applies everywhere temperatures appear in the app — the system monitor, the fan curve editor, and the automatic-switching thresholds.

@@ -1,0 +1,112 @@
+---
+title: "Cut a Pyren Release with release.sh"
+sidebarTitle: "Releasing"
+description: "Bump the version, update the changelog, build the release tarball with tools/release.sh, verify on a clean machine, then tag and publish to GitHub Releases."
+---
+
+Pyren releases are built locally with `tools/release.sh`. There is no release CI — releases happen rarely, they need a machine that can already build every part of the project, and a script means the person cutting the release watches it happen rather than reading a log after the fact. The whole process from version bump to published draft takes one sitting.
+
+<Note>
+The first release build compiles approximately 490 crates — the Tauri shell, WebKitGTK bindings, and all three workspaces in release mode. Budget **10–20 minutes** on first run and several gigabytes of `target/`. Later runs reuse the caches and are much faster.
+</Note>
+
+---
+
+## Release steps
+
+<Steps>
+  <Step title="Bump the version in all five manifests">
+    The version lives in five places. `tools/bump-version.sh` updates all of them atomically and refreshes the three `Cargo.lock` files:
+
+    ```sh
+    tools/bump-version.sh 0.2.0
+    tools/bump-version.sh --show    # confirm all five agree
+    ```
+
+    `tools/release.sh` refuses to run if the manifests disagree — `--show` is the fastest way to verify before proceeding.
+  </Step>
+
+  <Step title="Update CHANGELOG.md">
+    Open `CHANGELOG.md` and move the new version's notes out of `## [Unreleased]` into a new dated section:
+
+    ```md
+    ## [0.2.0] — 2026-MM-DD
+    ```
+
+    `tools/release.sh --publish` uses the matching changelog section verbatim as the GitHub release notes, so keep the prose accurate and complete.
+  </Step>
+
+  <Step title="Commit">
+    ```sh
+    git add -A && git commit -m "release: 0.2.0"
+    ```
+
+    <Warning>
+    `tools/release.sh` refuses a dirty working tree. Commit everything before running it. The `--allow-dirty` flag exists only for throwaway builds — never use it for a release that will be published.
+    </Warning>
+  </Step>
+
+  <Step title="Build the release archive">
+    ```sh
+    tools/release.sh                  # preflight → CI checks → build → stage → package
+    tools/release.sh --skip-tests     # skip CI checks if this commit is already green
+    tools/release.sh --appimage       # also produce a portable AppImage of the app
+    ```
+
+    The script runs these phases in order: preflight (manifest version agreement, clean tree) → checks (`cargo test`, `clippy`, `svelte-check`, the same set as CI) → build (all three workspaces in `--release --locked`) → stage → package.
+
+    Output lands in `dist/`:
+
+    | File | Description |
+    |---|---|
+    | `pyren-<version>-x86_64-linux.tar.gz` | The release — every binary, driver sources, systemd units, and `install.sh` |
+    | `SHA256SUMS` | Checksums for the archive |
+    | `pyren-<version>-x86_64.AppImage` | Only produced with `--appimage` |
+  </Step>
+
+  <Step title="Verify the archive on a different machine">
+    Install from the archive on a **different** machine or a container/VM — `install.sh` writes under `/usr` and `/etc` and enables a system service:
+
+    ```sh
+    tar xzf dist/pyren-0.2.0-x86_64-linux.tar.gz
+    cd pyren-0.2.0
+    sudo ./install.sh
+    newgrp pyren
+    pyren-check
+    pyren-ctl status
+    sudo ./uninstall.sh
+    ```
+
+    Verify that `pyren-check` prints a clean compatibility verdict, `pyren-ctl status` gets a response from the daemon, and the app opens. Uninstall cleanly before moving on.
+  </Step>
+
+  <Step title="Tag and push">
+    ```sh
+    git tag -a v0.2.0 -m "Pyren v0.2.0"
+    git push --follow-tags
+    ```
+  </Step>
+
+  <Step title="Publish the GitHub release">
+    ```sh
+    tools/release.sh --skip-tests --publish
+    ```
+
+    This creates a **draft** GitHub release `v0.2.0`, uploads everything in `dist/` (`pyren-0.2.0*` and `SHA256SUMS`), and fills the release notes from the matching `CHANGELOG.md` section. Review the draft on the Releases page and click **Publish** when satisfied.
+
+    Alternatively, create the release by hand: open the tag on GitHub, upload every file from `dist/`, and paste in the changelog section.
+  </Step>
+</Steps>
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `missing build libraries: webkit2gtk-4.1` / `gtk4-layer-shell-0` | Install the dev packages — see [Dev Setup](/contributing/development-setup) |
+| `version mismatch` in preflight | Run `tools/bump-version.sh <version>` to sync all five manifests |
+| `working tree is not clean` | Commit all changes before running `release.sh`; `--allow-dirty` is for throwaway builds only |
+| AppImage build fails on `linuxdeploy` / FUSE | `--appimage` requires FUSE on the host (Tauri fetches `linuxdeploy` itself). The tarball path needs neither — drop `--appimage` |
+| A flaky socket test under `cargo test --workspace` | Known issue (`dev/FINDINGS.md`); re-run, or use `--skip-tests` on a commit CI already passed |
+| `.deb` / `.rpm` requested | Not produced by default. `tauri build` can make them on a Debian/Fedora host if needed; Pyren ships the tarball only |

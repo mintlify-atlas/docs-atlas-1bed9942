@@ -1,0 +1,123 @@
+---
+title: "Check Hardware Compatibility for Pyren"
+sidebarTitle: "Compatibility"
+description: "Pyren probes your HP OMEN or Victus laptop at runtime to discover which features are supported — fan control, power modes, RGB lighting, and GPU tuning."
+---
+
+Pyren does not maintain a fixed allowlist of board IDs. Instead of deciding in advance which machines it supports, it measures what your specific laptop can actually do at runtime. Every time the daemon starts, it probes three hardware surfaces — fans, power modes, and lighting — and produces a single compatibility verdict that the app displays on its Hardware page, the daemon logs at startup, and `pyren-check` can reproduce independently on any machine before you install anything. The verdict is derived entirely from what is observed, never from a model name or board string.
+
+## Running pyren-check
+
+`pyren-check` is a standalone compatibility verifier that runs without a daemon, a socket, or a GUI. It probes the same three surfaces in the same order the daemon uses, produces the same verdict, and accepts a paste into a bug report that will match what the app shows.
+
+```sh
+pyren-check                    # read-only — safe on any machine, no root needed
+sudo pyren-check --write       # also verifies that the PWM channel accepts writes
+pyren-check --json             # machine-readable output for bug reports
+```
+
+### What it checks
+
+The report is structured in three sections, each with individual check lines marked `[ ok ]`, `[warn]`, `[FAIL]`, or `[skip]`:
+
+| Section | What it covers |
+|---|---|
+| **fans** | `hp-wmi` platform driver presence, hwmon node, fan RPM readout, PWM channel and mode files, fan cleaner availability, kernel log messages from `hp_wmi` |
+| **power** | ACPI platform profile, power-mode mechanisms (power-profiles-daemon, TLP, auto-cpufreq, EPP), package RAPL zone and PL1/PL2 limits, turbo/boost switch |
+| **lighting** | Per-key RGB USB device, kernel `rgb_zones` dialect, fourZone WMI dialect, lightbar WMI dialect |
+
+After the three sections, `pyren-check` prints a single **compatibility** line — that is the one line the entire tool exists to produce.
+
+### Exit codes
+
+The exit status is specifically about fan control, because that is what scripts branch on. The overall compatibility verdict (printed as the final line) can be broader — a machine with no fan control can still have power modes and a lightbar.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Fan control works — the PWM channel is present and speeds can be read |
+| `1` | Monitoring only — fan speeds can be read, but no PWM channel is exposed so speed cannot be set |
+| `2` | No fan-control interface — no HP fan-control interface found on this machine |
+
+<Warning>
+  `--write` rewrites the PWM channel to a value it is *not* already set to, then immediately restores the original mode. No fan has time to react — the probe value is in force for milliseconds, far below the driver's 90-second keep-alive. It does **not** spin fans up permanently. Root is required.
+</Warning>
+
+## What the compatibility verdict means
+
+The final line of `pyren-check` output — and the value the daemon stores as `system.compatibility` — is one of three values:
+
+| Verdict | Meaning |
+|---|---|
+| `controllable` | At least one hardware surface accepted control — fan speed/mode, power modes, or lightbar colour. The detail line lists which ones. |
+| `monitoringOnly` | The `hp-wmi` interface is present but nothing accepted control writes. Fan speeds and temperatures can still be read. |
+| `unsupported` | No `hp-wmi` interface and no power-mode mechanism. Monitoring may still work, but hardware control does not. |
+
+## Controls fields
+
+The `controls` object in the JSON output (and the equivalent display in the app's Hardware page) has individual boolean fields for each surface:
+
+| Field | When `true` |
+|---|---|
+| `fanMode` | `pwm1_enable` is present — the firmware supports switching between auto, max, manual, and curve modes |
+| `fanSpeed` | `pwm1` is also present — a specific fan speed can be set (required for manual and curve modes) |
+| `powerMode` | At least one power-mode mechanism answered (ACPI platform profile, power-profiles-daemon, TLP, auto-cpufreq, or EPP hint) |
+| `lightbar` | At least one lighting dialect answered a read — `kernelZones`, `fourZone` WMI, or `lightbar` WMI |
+| `gpuMux` | GPU MUX switching is available (probed by the daemon's `gpu` module, not by `pyren-check`) |
+| `networkQos` | Network QoS is available (probed by the daemon's `network` module, not by `pyren-check`) |
+
+<Note>
+  `pyren-check` does not probe `gpuMux` or `networkQos` — those are daemon-only modules. Both fields are always `false` in `pyren-check --json` output. The running daemon populates them after startup.
+</Note>
+
+## Running without building
+
+`tools/pyren-check.sh` is a dependency-free POSIX shell script that performs exactly the same checks, in the same order, with the same statuses, verdict, and exit code as the compiled Rust binary. It has no dependencies beyond `coreutils` — no Rust toolchain, no build step, no install.
+
+```sh
+# Copy to a remote machine and run directly
+scp tools/pyren-check.sh user@laptop:
+ssh user@laptop './pyren-check.sh'
+
+# With write verification
+ssh user@laptop 'sudo ./pyren-check.sh -w'
+
+# Machine-readable output
+ssh user@laptop './pyren-check.sh --json'
+```
+
+The shell script and the Rust binary are kept in sync by a parity test (`daemon/check/tests/parity.rs`) that runs both against the same fixtures and asserts they produce identical output. They cannot drift apart silently.
+
+## Using fixture environment variables for testing without HP hardware
+
+All three surfaces can be redirected to temporary directories so that `pyren-check` (and `pyren-check.sh`) can be exercised on any machine — including machines without HP hardware, in CI, or in containers — without touching real kernel interfaces.
+
+| Variable | What it redirects |
+|---|---|
+| `PYREN_HWMON_DIR` | Points the fan checks at a fixture directory instead of `/sys/devices/platform/hp-wmi/hwmon/hwmon*/`. Create `fan1_input`, `fan2_input`, `pwm1`, `pwm1_enable` files there to simulate different board configurations. |
+| `PYREN_USB_DEVICES` | Points the per-key RGB USB scan at a fixture directory instead of `/sys/bus/usb/devices`. Each subdirectory should contain `idVendor` and `idProduct` files. |
+| `PYREN_ACPI_CALL` | Points the ACPI lighting and fan-cleaner probes at a fixture file instead of `/proc/acpi/call`. The advisory lock file is placed beside the fixture path (e.g. `<path>.lock`) as it is on the real interface. |
+
+Example — simulating a machine with fans but no PWM control:
+
+```sh
+FIXTURE=$(mktemp -d)
+echo "2300" > "$FIXTURE/fan1_input"
+echo "1950" > "$FIXTURE/fan2_input"
+# No pwm1 or pwm1_enable — monitoring only
+
+PYREN_HWMON_DIR="$FIXTURE" pyren-check
+# Exit code 1, verdict: monitoringOnly
+```
+
+The 514-test suite in `daemon/` uses these variables throughout. Running `cd daemon && cargo test --workspace` exercises every fan mode, curve, calibration path, and compatibility classification without requiring HP hardware.
+
+## Optional hardware requirements
+
+Two features have additional kernel module dependencies beyond the base `hp-wmi` driver:
+
+| Feature | Requirement |
+|---|---|
+| **RGB lightbar** and **fan cleaning mode** | `acpi_call` kernel module (`/proc/acpi/call` must be present). Install `acpi_call-dkms` on Arch, `acpi-call-dkms` on Debian/Ubuntu, or `akmod-acpi_call` on Fedora, then `modprobe acpi_call`. |
+| **GPU overclocking** (core and memory clock offsets) | NVIDIA proprietary driver with `libnvidia-ml`. Pyren uses NVML directly, so no Xorg server and no `Coolbits` setting is required — it works on Wayland. |
+
+If `acpi_call` is not loaded, `pyren-check` reports the lightbar and fan-cleaner checks as `[skip]` with a remedy message. The rest of the compatibility verdict is unaffected.

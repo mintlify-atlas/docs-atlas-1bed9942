@@ -1,0 +1,302 @@
+---
+title: "rgb Module: Keyboard and Lightbar RGB Control"
+sidebarTitle: "rgb"
+description: "The rgb module controls the 4-zone ACPI lightbar and per-key USB keyboard lighting with effects, brightness, power sweep animations, and up to 15 saved configurations."
+---
+
+The `rgb` module drives two distinct pieces of RGB hardware through a single interface: the 4-zone lighting strip controlled over ACPI-WMI, and the per-key USB keyboard. Both are probed at startup and whenever the relevant interfaces change on disk. Which hardware path is active — and which dialect within those paths — is determined entirely by what the machine answers, never by model name or a lookup table. The module exposes a unified set of methods regardless of which path is live, scaling every brightness value in software so a slider means the same thing on every dialect.
+
+<Info>
+FEATURES.md notes that three distinct lightbar dialects exist and are auto-picked based on what the hardware answers: `kernelZones` (the kernel's own `rgb_zones` sysfs files), `fourZone` (WMI command `0x20009`, types 2/3), and `lightbar` (WMI command `0x20009`, type 11). They are tried in that order and the order is not arbitrary — `kernelZones` cannot send the firmware a command it did not expect, so wherever it exists it is the right answer.
+</Info>
+
+## Hardware detection
+
+The `rgb` module probes two unrelated hardware paths:
+
+| Path | Transport | Device | Status |
+|---|---|---|---|
+| Four-zone lighting | ACPI-WMI (`hp-wmi`) or kernel `rgb_zones` sysfs | Firmware lightbar / keyboard zones | **Driven** |
+| Per-key RGB keyboard | USB HID via `hidapi` | HP Gaming Keyboard II (`0d62:54bf`) | **Detected, not driven** |
+
+Probing is always a **read**, never a write. A dialect is considered available only when a read through it answered — nothing probes by writing, because a probe that changes the lights on a machine that speaks a different dialect would be a write of unknown meaning.
+
+<Note>
+`acpi_call` is optional but required for the `fourZone` and `lightbar` WMI dialects. Without it, only `kernelZones` (sysfs files exposed by the kernel's `hp-wmi` driver) is available. The app reports exactly which hardware paths are available and why others are not — a missing `acpi_call` module is one `modprobe` or package install away, not a permanent hardware limit. A missing `acpi_call` returns error kind `failed` (naming the package), never `notCapable`.
+</Note>
+
+## Methods
+
+### `rgb.getCapabilities`
+
+Re-probes both hardware paths on every call. Use this after installing `acpi_call` to check availability without restarting the daemon.
+
+**Params:** none
+
+**Result:** A full capabilities object describing both hardware paths.
+
+```json
+{
+  "perKey": {
+    "present": false,
+    "usbId": "0d62:54bf",
+    "ported": false,
+    "detail": "no HP Gaming Keyboard II on this machine"
+  },
+  "lighting": {
+    "present": false,
+    "hpWmi": true,
+    "acpiCall": true,
+    "acpiCallInstalled": true,
+    "commandAnswers": false,
+    "unreachable": null,
+    "dialects": [
+      {
+        "id": "kernelZones",
+        "transport": { "key": "rgb.dialect.transport.kernelZones", "text": "the kernel's rgb_zones files" },
+        "available": false,
+        "asked": false,
+        "detail": { "key": "rgb.dialect.unreachable.kernelZones", "text": "no kernel rgb_zones files, under either hp-wmi or omen-rgb-keyboard" }
+      },
+      {
+        "id": "fourZone",
+        "transport": { "key": "rgb.dialect.transport.fourZone", "text": "WMI 0x20009, command types 2/3" },
+        "available": false,
+        "asked": true,
+        "detail": { "key": "rgb.dialect.refused", "params": { "answer": "" }, "text": "the firmware refused this lighting dialect (it answered: )" }
+      },
+      {
+        "id": "lightbar",
+        "transport": { "key": "rgb.dialect.transport.lightbar", "text": "WMI 0x20009, command type 11" },
+        "available": false,
+        "asked": true,
+        "detail": { "key": "rgb.dialect.refused", "params": { "answer": "" }, "text": "the firmware refused this lighting dialect (it answered: )" }
+      }
+    ],
+    "detail": "the firmware was asked in every dialect this build knows and refused each one"
+  },
+  "supported": false
+}
+```
+
+Four fields that are easy to conflate and must not be:
+
+- **`present`** is a claim about hardware — only ever `true` when some dialect was asked and answered.
+- **`asked: false`** is not a refusal. It means the question could not be put (no kernel files, no `hp-wmi`, no `/proc/acpi/call`, or daemon not root). A client that shows "no lighting" for this is reporting something nobody established.
+- **`acpiCall` vs `acpiCallInstalled`** are different problems: not installed needs a package, installed-but-not-loaded needs a `modprobe`.
+- **`commandAnswers`** is whether WMI command `0x20009` answered a plain read at all, independent of any dialect. `true` with no available dialect means the machine has lighting but none of the three known operations is the right one — pin a dialect manually rather than assuming the hardware is absent.
+
+### `rgb.getStatus`
+
+Returns the cached probe result (re-taken only when interface facts change on disk) plus what this daemon last set.
+
+**Params:** none
+
+**Result:** The full status object, including:
+
+| Field | Description |
+|---|---|
+| `dialect` | What was requested: `"auto"` or a dialect id |
+| `activeDialect` | What that resolved to; `null` when nothing answered |
+| `effect` | The effect object that was asked for, or `null` |
+| `effectRunning` | Whether the effect thread is currently animating |
+| `fps` | Frames per second the effect is running at |
+| `throttled` | `"lid"`, `"battery"`, or `null` |
+| `dark` | `true` when `rgb.powerOff` was the last power-sweep call |
+| `error` | Last write failure as a `Msg` object, or `null` |
+| `restoreOnStart` | Whether the lighting config is restored when the daemon starts |
+| `powerAnimation` | Whether power-on/off sweeps are enabled |
+| `batteryFps` | Effect frame rate while on battery (default 15) |
+
+### `rgb.setZones`
+
+Sets each of the four zones to an explicit colour.
+
+**Params:** `{ "zones": [c, c, c, c], "brightness"?: 0-100 }`
+
+**Result:** The status object.
+
+Stops any running effect. A colour `c` is accepted as `"#rrggbb"` or `[r, g, b]`. Components outside 0–255 are clamped rather than refused.
+
+### `rgb.setStatic`
+
+Sets all four zones to a single colour.
+
+**Params:** `{ "color": c, "brightness"?: 0-100 }`
+
+**Result:** The status object.
+
+### `rgb.off`
+
+Turns all zones off (equivalent to `setStatic` with black at zero brightness).
+
+**Params:** none
+
+**Result:** The status object.
+
+### `rgb.readZones`
+
+Reads the current zone colours from the hardware.
+
+**Params:** none
+
+**Result:** `{ "zones": [c, …] }` — the zones that could actually be read.
+
+<Note>
+`acpi_call` truncates its reply buffer to 256 characters. Each byte costs six characters, so no reply exceeds 42 bytes regardless of what the firmware sent. On a `fourZone` machine, `COLOR_GET` returns 34 bytes — zones 0–2 fit but zone 3 starts at byte 34 and does not. `readZones` returns exactly the zones it read (three on such a machine) rather than padding with invented black. A client must size itself from the array it receives.
+</Note>
+
+### `rgb.setDialect`
+
+Pins the active dialect or returns to auto-detection.
+
+**Params:** `{ "dialect": "auto" | id }`
+
+**Result:** The status object.
+
+A pinned dialect is used whether or not the probe read anything — which is exactly why this method exists. Auto-selection can only pick a dialect it can *read*; the user at the keyboard can see whether the lights actually changed.
+
+### `rgb.listEffects`
+
+Returns the available effect kinds and their metadata.
+
+**Params:** none
+
+**Result:** `{ "effects": [{ "id", "usesColors", "defaults" }], "maxColors", "speed", "fps" }`
+
+### `rgb.setEffect`
+
+Starts an animation effect.
+
+**Params:** `{ "effect": e, "brightness"?: 0-100, "fps"?: 5-60 }`
+
+**Result:** The status object.
+
+An effect `e` is a JSON object:
+
+```json
+{ "kind": "wave", "colors": ["#008cff", "#000000"], "speed": 5, "direction": "leftToRight" }
+```
+
+Only `kind` is required. `speed` is 1–10 (5 is the base cycle, 10 is twice as fast). `direction` is `leftToRight` or `rightToLeft`. At most eight colours are kept; missing colours fall back to the effect's defaults as reported by `listEffects`.
+
+### `rgb.stopEffect`
+
+Stops a running effect and writes the static zones again.
+
+**Params:** none
+
+**Result:** The status object.
+
+### `rgb.setBrightness`
+
+Adjusts brightness without restarting a running effect.
+
+**Params:** `{ "brightness": 0-100 }`
+
+**Result:** The status object.
+
+`brightness` is a percentage — not a 0–255 level. Only `lightbar` has a native brightness field in its payload; the other two dialects scale colours in software (`pyren_rgb::scale`), which is why brightness is a percentage everywhere and works identically on all three dialects.
+
+### `rgb.powerOn`
+
+Sweeps the lights in from black, zone by zone from the left, over 1.2 s.
+
+**Params:** `{ "ifEnabled"?: bool }`
+
+**Result:** The status object, returned once the sweep completes.
+
+With `ifEnabled: true`, does nothing unless `powerAnimation` is on and the lights are currently `dark`. This is what the suspend hook (`/usr/lib/systemd/system-sleep/pyren`) passes on resume.
+
+### `rgb.powerOff`
+
+Sweeps the lights out from right to left over 1.2 s and sets `dark: true`.
+
+**Params:** `{ "ifEnabled"?: bool }`
+
+**Result:** The status object, returned once the sweep completes.
+
+A running effect continues animating under the sweep. The effect config is preserved — `dark: true` is the state, not a deletion.
+
+### `rgb.setPowerAnimation`
+
+Enables or disables the power-on/off colour sweep.
+
+**Params:** `{ "enabled": bool }`
+
+**Result:** The status object.
+
+When enabled, the daemon also sweeps in when restoring lights at start and sweeps out on SIGTERM when systemd signals the machine is stopping. A SIGTERM that is only the service stopping puts the static zones back if an effect was running, so the keys are not left on a half-drawn frame.
+
+### `rgb.setBatteryFps`
+
+Sets the effect frame rate used while on battery.
+
+**Params:** `{ "fps": 0-60 }`
+
+**Result:** The status object.
+
+`0` pauses the effect while on battery without stopping it. Default is 15. With the lid closed the effect also pauses regardless of this setting; `getStatus.throttled` reports which condition is active.
+
+### `rgb.setRestoreOnStart`
+
+Controls whether the current lighting config is restored when the daemon starts.
+
+**Params:** `{ "enabled": bool }`
+
+**Result:** The status object.
+
+When `true`, the static zones and any active effect are both restored. With `powerAnimation` on, the daemon performs the sweep-in on startup.
+
+## Effects
+
+The firmware has no native animation engine. An effect is the daemon rewriting the four zones `fps` times per second from a dedicated thread — one `COLOR_SET` per frame on `fourZone`, with the firmware buffer read once and kept.
+
+| `kind` | What the colours mean |
+|---|---|
+| `breathing` | One colour per zone (cycled), dimming to black and back |
+| `spectrum` | Colours ignored — every zone walks the colour wheel together |
+| `rainbowWave` | Colours ignored — the wheel spread across zones, moving |
+| `wave` | First colour is the pulse; second is the background it crosses |
+| `fade` | A list faded through in order; a single colour fades to black |
+
+An effect whose writes fail three times in a row stops itself and records the reason in `getStatus.error`. The state `effect` set with `effectRunning: false` means the effect was asked for but is not running. `setZones`, `setStatic`, and `off` all stop a running effect; `setBrightness` dims it in place without restarting it.
+
+## Brightness and throttling
+
+Brightness at zero is a **pause**, not a fake: nothing is written to the hardware and the keys keep their last frame. This is different from faking black — a client that sets brightness to 0 to hide the lights and then restores it gets the real last state back, not a frame generated from zeros.
+
+On battery, an effect runs at `batteryFps` (default 15; `0` pauses it). With the lid shut, the effect pauses regardless of the battery state. The daemon reads the charger and lid state every two seconds. `getStatus.throttled` reports `"battery"`, `"lid"`, or `null`.
+
+## Saved configurations
+
+Up to 15 lighting configurations can be stored. They live in their own config file, separate from all other module settings, so lighting preferences survive changes to power, fan, or system configuration.
+
+## Dialect details
+
+| id | Transport | Needs | Source |
+|---|---|---|---|
+| `kernelZones` | `/sys/devices/platform/{hp-wmi,omen-rgb-keyboard}/rgb_zones/zone00…03` | A kernel that publishes the files | In-tree `hp-wmi` or out-of-tree `omen-rgb-keyboard` |
+| `fourZone` | WMI `0x20009`, command types 2 (`COLOR_GET`) / 3 (`COLOR_SET`) | `acpi_call`, root | The 2023 `hp-wmi` four-zone patch and `OmenLinux/omen-rgb-keyboard` (2025) |
+| `lightbar` | WMI `0x20009`, command type 11 (`SET_LIGHTBAR_COLORS`) | `acpi_call`, root | `omen-rgb-linux`, the port this module started as |
+
+<Warning>
+On the one OMEN this project has run on, `lightbar` answers `PASS` to every read and write, reports all four zones black, and changes nothing. `fourZone` on the same machine returns the real colours and drives them. Auto-selection puts `fourZone` ahead of `lightbar` for exactly this reason. A firmware `PASS` is not evidence the command worked.
+</Warning>
+
+`getStatus` reports the dialect choice and the resolution separately:
+
+```json
+{ "dialect": "auto", "activeDialect": "fourZone" }
+```
+
+`dialect` is what was asked for; `activeDialect` is what that resolved to — `null` when nothing answered.
+
+## Error kinds
+
+| Situation | `kind` |
+|---|---|
+| No `hp-wmi` on this machine | `unsupported` |
+| `/proc/acpi/call` missing | `failed` (with the package name in the message) |
+| Not root | `permissionDenied` |
+| Firmware asked and refused this dialect | `notCapable` |

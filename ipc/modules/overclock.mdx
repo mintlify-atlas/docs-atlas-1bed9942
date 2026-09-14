@@ -1,0 +1,183 @@
+---
+title: "overclock Module: GPU Clock Offsets and Locks"
+sidebarTitle: "overclock"
+description: "The overclock module applies NVIDIA GPU core and memory clock offsets via NVML or nvidia-settings, with confirmation-gated apply and automatic revert on timeout."
+---
+
+The `overclock` module manages GPU clock offsets and is the only module in Pyren that operates outside the firmware's stock envelope. Every other module either stays within the envelope the firmware shipped or explicitly restores it; this one can leave it. That distinction is why it is the only module with a mandatory consent step, a staged apply, and an automatic revert timer — not as ceremony, but because an offset that survives a benchmark can still hang the machine in a game, and what happens then is a frozen screen and lost work. Three gates stand between a slider and a written clock offset, and a client cannot skip any of them.
+
+## Methods
+
+| Method | Params | Result | Status |
+|---|---|---|---|
+| `overclock.getState` | none | Every GPU, what can be moved on it, and what is currently set | ✅ implemented, read-only |
+| `overclock.probe` | `{ "allowWrites"?: bool }` | A fresh probe, replacing the startup one | ✅ implemented; writes only with `allowWrites` |
+| `overclock.setConsent` | `{ "accepted": bool }` | The state | ✅ implemented |
+| `overclock.apply` | `{ "gpu"?, "coreOffsetMhz"?, "memOffsetMhz"?, "clockLock"?, "holdSecs"? }` | The state, with `pending` armed | ✅ implemented; offsets and clock locks need root |
+| `overclock.confirm` | none | The state | ✅ implemented |
+| `overclock.cancel` | none | The state | ✅ implemented |
+| `overclock.reset` | `{ "gpu"? }` | The state | ✅ implemented |
+| `overclock.setRestoreOnStart` | `{ "enabled": bool }` | The state | ✅ implemented |
+
+### `overclock.getState`
+
+Returns every detected GPU, its capabilities, and what is currently applied.
+
+**Params:** none
+
+**Result:** The full state object, including:
+
+| Field | Description |
+|---|---|
+| `consent.text` | The warning the user must accept before `apply` works (a bare string — it is a legal record, not a UI label) |
+| `consent.accepted` | Whether consent has been given |
+| `consent.version` | Stamp that lets a future rewording invalidate old consent |
+| `gpus` | Array of GPU state objects (see below) |
+| `pending` | The pending change object if `apply` has been called and not yet confirmed or reverted |
+| `detail` | A `Msg` object describing the overall state |
+| `note` | A `Msg` object when a request was clamped to the driver's advertised range |
+| `error` | A `Msg` object for the last runtime failure |
+| `unconfirmedAtStart` | `true` when the daemon started and found an armed but unconfirmed apply from a previous session |
+| `restoreOnStart` | Whether confirmed offsets are restored on daemon start |
+
+Each GPU state object includes:
+
+| Field | Description |
+|---|---|
+| `offsetsWritable` | Whether clock offsets can be applied to this card right now |
+| `coreOffset` | `{ "min", "max", "current" }` — range withdrawn when `offsetsWritable` is `false` |
+| `memOffset` | `{ "min", "max", "current" }` — range withdrawn when `offsetsWritable` is `false` |
+| `clockLock` | `{ "min", "max", "current" }` or `null` if pin-to-max is not supported |
+| `offset_mechanism` | Which path is live: `"nvml"`, `"nvidia-settings"`, or `null` |
+| `detail` | A `Msg` object describing this GPU's state |
+
+All prose fields (`detail`, `note`, `error`, and each GPU's `detail`) are `Msg` objects — `{ key, params?, text }`. A client that localises renders `key` + `params`; one that does not shows `text`.
+
+### `overclock.setConsent`
+
+Records whether the user has accepted the overclock warning.
+
+**Params:** `{ "accepted": bool }`
+
+**Result:** The state.
+
+`getState.consent.text` is the warning. It is served by the daemon rather than written into the app so that what somebody agreed to cannot be reworded by the client. Until `setConsent { "accepted": true }` has been called, `overclock.apply` refuses with `invalidParams`.
+
+Withdrawing consent (`accepted: false`) is not a preference change — it immediately puts every card this daemon has moved back to stock.
+
+<Warning>
+`overclock.reset` never requires consent. There is no state of this module in which "put it back" is refused.
+</Warning>
+
+### `overclock.apply`
+
+Stages clock offsets or a clock lock for a GPU.
+
+**Params:** `{ "gpu"?, "coreOffsetMhz"?, "memOffsetMhz"?, "clockLock"?, "holdSecs"? }`
+
+**Result:** The state with `pending` armed and a countdown running.
+
+An apply is **walked in steps** — 15 MHz of core offset, 50 MHz of memory at a time. Each step is written, read back, and re-queried before the next. This does not find a stable offset; only a workload can do that. What it buys is a bounded distance between "the card was answering" and "the card stopped", so a failure names the step that caused it and the card is put back to where it started rather than left at whichever step died.
+
+Nothing is ever asked for that the driver has not advertised. The ranges in `coreOffset`, `memOffset`, and `clockLock` are read from the hardware; a request outside them is clamped, and the clamp is reported in `getState.note` rather than applied silently.
+
+After `apply` returns, the caller must call `overclock.confirm` before `holdSecs` runs out, or the daemon reverts the change automatically.
+
+### `overclock.confirm`
+
+Keeps the staged offsets, disarming the revert timer.
+
+**Params:** none
+
+**Result:** The state.
+
+### `overclock.cancel`
+
+Reverts the staged offsets immediately, before the timer runs out.
+
+**Params:** none
+
+**Result:** The state.
+
+`confirm` and `cancel` perform the same revert operation. "The timer ran out" and "the user pressed undo" must not be two separate code paths that can disagree on what reverted means.
+
+### `overclock.reset`
+
+Puts a card (or all cards) back to stock immediately.
+
+**Params:** `{ "gpu"? }` — omit to reset all cards.
+
+**Result:** The state.
+
+Never refused, regardless of consent state.
+
+### `overclock.probe`
+
+Replaces the startup probe with a fresh one.
+
+**Params:** `{ "allowWrites"?: bool }`
+
+**Result:** The state.
+
+With `allowWrites: false` (the default), this is a read-only re-probe. What each machine can actually do is probed dynamically — which driver version is installed, whether an X server with `Coolbits` is visible, whether NVML's `VfOffset` symbols are present — because those facts vary far more by driver version and session configuration than by card model.
+
+### `overclock.setRestoreOnStart`
+
+Controls whether confirmed offsets are restored when the daemon starts.
+
+**Params:** `{ "enabled": bool }`
+
+**Result:** The state.
+
+If the daemon starts and finds an armed-but-unconfirmed apply from a previous session (the machine was overclocked when it shut down), `restoreOnStart` is ignored for that boot regardless of this setting, and `unconfirmedAtStart` is set in the state.
+
+## Supported mechanisms
+
+| Vendor | Mechanism | Needs | Status |
+|---|---|---|---|
+| NVIDIA | NVML (`libnvidia-ml`) clock offsets | root | Implemented — tried first |
+| NVIDIA | `nvidia-settings` clock offsets | X display with `Coolbits` | Implemented — fallback for drivers too old for NVML `VfOffset` symbols |
+| NVIDIA | `nvidia-smi --lock-gpu-clocks` | root | Implemented |
+| AMD | `pp_od_clk_voltage` Overdrive | `amdgpu.ppfeaturemask` | Detected, not driven |
+| Intel | `gt_max_freq_mhz` | — | Not overclockable: it is a ceiling, not an offset |
+
+All of these are probed dynamically — none is looked up from the card model. The same rule that governs hardware detection everywhere in Pyren applies here: what a machine can do is a question the machine can be asked.
+
+### NVML vs `nvidia-settings`
+
+The two NVIDIA offset paths are one knob with a fallback:
+
+**NVML is tried first.** The driver's own library needs only root — no X server, no session, no `Coolbits`. It is the path that works on Wayland, where there is no NVIDIA X screen for `Coolbits` to apply to.
+
+**`nvidia-settings` is second**, and only when NVML cannot answer *at all* (`Unavailable` — a driver that predates the `VfOffset` symbols). A `NotSupported` or permission refusal from NVML is the driver's considered answer about this card; it is not re-asked through another interface.
+
+`offset_mechanism` in the GPU state object reports which path is live.
+
+When `nvidia-settings` is reached on an old-driver system, it needs an X screen with `Coolbits`. Because a systemd daemon runs in nobody's session, the operator must either allow it in their session (`xhost +si:localuser:root`) or set `PYREN_X_DISPLAY` and `PYREN_XAUTHORITY`. The module reports which of those refusals it hit rather than passing the driver's wording through.
+
+When `offsetsWritable` comes back `false`, the offset ranges (`coreOffset`, `memOffset`) are **withdrawn** from the state entirely. A slider that can only ever fail is worse than no slider.
+
+<Note>
+`--lock-gpu-clocks` is not an overclock. It cannot ask for a frequency the card was not shipped able to run. It is exposed here because it is the knob that decides how long the card is willing to *stay* at its advertised maximum — which is often what someone on this page is actually after. `getState.gpus[*].clockLock` is `null` when pin-to-max is not supported on a given card.
+</Note>
+
+<Warning>
+AMD Overdrive (`pp_od_clk_voltage`) is **detected but deliberately not driven**. There is no AMD machine available to test on, and a wrong write to `pp_od_clk_voltage` does not fail with an error message — it silently does the wrong thing. `detail` on any AMD GPU entry says so in plain words. Do not attempt to drive this path without test hardware.
+</Warning>
+
+## Consent and revert
+
+The three gates between a slider and a written clock offset are not ceremony:
+
+**1. Consent.** `getState.consent.text` is served by the daemon rather than written into the app, so the wording cannot be altered by a client, and `consent.version` lets a future rewording invalidate previously-recorded consent. `apply` refuses with `invalidParams` until `setConsent { "accepted": true }` has been called.
+
+**2. A climb, not a write.** Offsets are walked to their target in steps (15 MHz / 50 MHz at a time), with a readback between each. A failure at any step puts the card back to its starting point and names the step that failed.
+
+**3. A revert timer.** After `apply` returns, `pending.secondsLeft` counts down. `confirm` keeps the offsets; `cancel` or a lapsed timer reverts them. This is what runs even when the desktop is gone — no app, no session, just a root daemon with a thread and a deadline. A client that closes mid-countdown has not kept an overclock; it has arranged for one to be undone.
+
+The timer spans reboots. The armed flag is persisted to disk. A daemon that starts and finds it set skips `restoreOnStart`, writes nothing, and sets `unconfirmedAtStart: true` in the state.
+
+## What this module will not do
+
+- **Raise the CPU's package power limits.** The `power` module owns those registers and re-applies them clamped to stock on every mode change. Two owners on one register is a worse bug than a missing feature.
+- **Undervolt** or set a fan curve. More heat is the `fan` module's problem.

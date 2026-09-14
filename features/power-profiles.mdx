@@ -1,0 +1,112 @@
+---
+title: "Power Profiles and Automatic Switching in Pyren"
+sidebarTitle: "Power Profiles"
+description: "Switch between Eco, Balanced, Performance, and Unlimited power profiles manually or automatically per power source, with optional OS power manager integration."
+---
+
+Pyren exposes four power profiles — **Eco**, **Balanced**, **Performance**, and **Unlimited** — that each drive up to three independent hardware mechanisms: the laptop's own ACPI firmware profile (which changes the embedded controller's fan curve and internal power states), an optional OS power manager profile (power-profiles-daemon, TLP, or auto-cpufreq), and an optional per-mode power envelope (PL1/PL2 limits and turbo). These three mechanisms are distinct owners and are configured separately. The firmware profile is the most impactful because it is the only path that reaches EC-level behavior — PCIe link power, thermal thresholds — that no userspace knob touches directly.
+
+## Profile definitions
+
+The table below shows what each mode maps onto. PL1/PL2 and turbo are left at stock until you explicitly tune them with `power.setTuning`.
+
+| Mode | Firmware profile | OS profile | PL1 / PL2 | Turbo |
+|---|---|---|---|---|
+| **Eco** | `low-power` | `power-saver` | *stock* | on |
+| **Balanced** | `balanced` | `balanced` | *stock* | on |
+| **Performance** | `performance` | `performance` | *stock* | on |
+| **Unlimited** | `performance` | `performance` | *stock* | on |
+
+<Info>
+**Unlimited maps to the same firmware profile as Performance.** There is no fifth profile in any known HP firmware. What distinguishes Unlimited from Performance is the per-mode power envelope you can configure on top — not a different platform profile name.
+</Info>
+
+## Automatic switching
+
+Pyren's background supervisor thread drives two independent automatic-switching systems, plus a thermal safety rule that applies to both. The supervisor keeps running whether or not the main application window is open.
+
+### The two systems
+
+| System | When it acts | What it does |
+|---|---|---|
+| `ecoOnBattery` | Machine unplugged | Jumps to `preferredOnBattery` immediately, then refines between Eco and Balanced |
+| `performanceOnLoad` | Machine plugged in | Jumps to `preferredOnMains` immediately, then refines between Balanced and Performance |
+| `backOffWhenHot` | CPU/GPU package above `tempHighC` | Holds one step below the current baseline until temperature drops below `tempLowC` |
+
+The ranges each source allows look like this:
+
+```
+on battery:   Eco  <--->  Balanced
+on mains:           Balanced  <--->  Performance
+```
+
+**Unlimited is never chosen automatically.** It is the one mode the user must ask for explicitly. The supervisor will move *out* of Unlimited when the power source changes (unplugging while at Unlimited drops to `preferredOnBattery`), but it never refines its way in.
+
+### Preferred modes per source
+
+Each source has a configurable home mode:
+
+- `preferredOnBattery` — `eco` or `balanced` (default: `eco`)
+- `preferredOnMains` — `balanced` or `performance` (default: `performance`)
+
+A change of power source snaps to the preferred mode immediately (with a two-sample confirmation guard to filter single-sample charger flickers), and refinement always returns to the preferred mode once load and temperature have settled.
+
+A mode set by hand becomes the **baseline** that refinement works around rather than away from. After `manualOverrideSecs` the supervisor resumes, but steps down from the hand-picked mode for heat, idleness, or a low battery — and back up to it when those conditions pass. It never steps *above* a manually chosen mode.
+
+<Note>
+Pyren watches the firmware profile, EPP hint, turbo flag, and package limits once per second. If something outside Pyren moves them — the `Fn+P` key, a desktop battery menu, or a competing power manager — the daemon follows the change and reports it via the `power.overridden` event rather than writing over it silently. You can see which knob was overridden and whether it was reverted in the notification history.
+</Note>
+
+## OS profile integration
+
+The OS profile side of a mode (power-profiles-daemon, TLP, or auto-cpufreq) is **off by default** and is controlled separately from the firmware profile.
+
+```json
+{ "applyToOsProfile": false }
+```
+
+Setting `applyToOsProfile` to `true` tells Pyren to delegate to whichever OS power manager is present rather than leaving it alone. Delegation is intentional — power-profiles-daemon already drives EPP and the governor, and writing those files on top of it would produce two programs fighting over the same knobs. The per-CPU energy-performance hint is only used as a direct fallback on machines with no power manager at all.
+
+Switching `applyToOsProfile` off resets any auto-cpufreq override that was in place (`--force=reset`), and the daemon also resets it on SIGTERM.
+
+## Power envelope tuning
+
+The power envelope (PL1, PL2, turbo) ships untouched. Applying a mode never raises limits above what the firmware originally provided — going above stock is treated as CPU overclocking, which is an explicit separate action with its own consent gate.
+
+You tune the envelope per mode with `power.setTuning`:
+
+```json
+{ "mode": "performance", "pl1W": 45, "pl2W": 60, "turbo": true }
+```
+
+<Steps>
+
+### Set a watt target
+
+Specify PL1 and PL2 in watts. The daemon stores them as a percentage of *this machine's own stock limits*, so a saved config means the same thing when restored on different hardware.
+
+### Confirm the readback
+
+Every write is read back. A limit more than 1 W away from what was requested (RAPL rounds to its power unit) is reported in `failed`. A locked firmware limit is reported rather than written.
+
+### The mode re-applies immediately
+
+If you tune the mode you are currently in, the envelope is applied at once — you hear the change without switching modes.
+
+</Steps>
+
+Nothing ever asks for more than stock. PL1 must be ≤ PL2. PL4 (the VRM ceiling) is always left at stock.
+
+## CLI usage
+
+```sh
+# Switch modes manually
+pyren-ctl power set eco
+pyren-ctl power set performance
+
+# Tune the power envelope for a mode
+pyren-ctl power tune --mode performance --pl1 45 --pl2 60
+
+# Enable automatic switching with preferred modes
+pyren-ctl power auto on --on-battery balanced --on-mains performance
+```

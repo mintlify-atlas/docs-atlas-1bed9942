@@ -1,0 +1,109 @@
+---
+title: "Daemon Events and Long Polling with core.nextEvent"
+sidebarTitle: "Events"
+description: "Subscribe to real-time daemon events using core.nextEvent long polling. Covers hotkey.pressed, power.mode, power.overridden, fan.mode, and fan.floorRaised topics."
+---
+
+Events let clients react to daemon-side changes without polling `getState` in a tight loop. The user presses the hotkey, another program shifts the power mode, the fan stall-watch nudges the fan floor — all of these happen on the daemon's side, and a UI that cares about them needs to hear about it within the tens of milliseconds a person notices, not on the next poll. Pyren delivers all events through a single long-poll method, `core.nextEvent`, without changing anything about the framing: a client still sends one request line and reads one response line, the call simply does not answer until there is something to say.
+
+<Tip>
+You can watch the live event stream from a terminal without writing any code:
+
+```sh
+pyren-ctl events
+```
+</Tip>
+
+## `core.nextEvent`
+
+### Request
+
+```json
+{ "id": 4, "module": "core", "method": "nextEvent", "params": { "since": 12, "timeoutMs": 25000 } }
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `since` | number | The `seq` value from the previous `nextEvent` reply. **Omit on the first call**, which means "start from now." A freshly connected client almost never wants the key presses of a minute ago, and omitting `since` is what keeps an OSD quiet at login instead of flashing on startup. |
+| `timeoutMs` | number | How long the daemon will wait before answering with an empty result. Defaults to **25 000 ms**; capped at **60 000 ms**, so a client cannot pin a daemon thread indefinitely. |
+
+### Response
+
+```json
+{
+  "id": 4,
+  "result": {
+    "seq": 14,
+    "missed": 0,
+    "events": [
+      {
+        "seq": 13,
+        "topic": "hotkey.pressed",
+        "ageMs": 4,
+        "payload": { "action": "show", "mode": "balanced" }
+      },
+      {
+        "seq": 14,
+        "topic": "power.mode",
+        "ageMs": 4,
+        "payload": { "mode": "balanced", "source": "hotkey" }
+      }
+    ]
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `seq` | The sequence number of the most recent event in the daemon's ring, whether or not events were returned. Pass this as `since` on the next call to pick up where you left off. |
+| `events` | The events that arrived since `since`, in order. Empty when the poll times out or when nothing happened. |
+| `missed` | How many events were lost because the client fell too far behind (see below). |
+
+<Note>
+A timed-out poll is a normal empty result — `events: []` with the current `seq` — not an error. Loop straight back to the next `nextEvent` call.
+</Note>
+
+## Sequence numbers and the bounded buffer
+
+The daemon keeps a ring of **64 events**. If a client falls further behind than that, `missed` tells it how many events it lost rather than handing it a silent gap. A non-zero `missed` means **re-read the relevant state** (call `power.getState`, `fan.getStatus`, etc.) — it does not mean replay the lost events, because they are gone.
+
+`seq` is returned on every reply, whether or not any events were delivered. A client that sent a stale `since` catches up automatically from the seq in the response.
+
+## Detecting a daemon restart
+
+The daemon counts from zero on every start. If the `seq` in a reply comes back **lower** than the one your client is holding, the daemon has restarted. Adopt the new `seq` (treat it as if `since` was omitted) and re-read any state your UI depends on.
+
+## Event topics
+
+| Topic | Published when | Payload fields |
+|---|---|---|
+| `hotkey.pressed` | The bound key was pressed (or `hotkey.press` was called). | `{ action, device, mode }` — `mode` is the power mode currently in force, so the widget can draw it. |
+| `power.mode` | The power mode actually moved, **whoever moved it** — the app, `pyren-ctl`, the widget, an auto-switch, or an external program the daemon followed. | `{ mode, source }` |
+| `power.overridden` | Another program changed something the daemon set (the CPU hint, turbo, a package limit, a firmware profile no mode maps onto). Reported, not automatically rewritten. | `{ knob, expected, found, reverted }` — `reverted` is set when it happened within 15 s of the daemon's own write. |
+| `fan.mode` | A `fan.setMode` took effect, **whoever asked**. | `{ mode, manualPwm, source }` — `manualPwm` is the commanded manual speed (0–255), for a client that shows a slider but not a curve. |
+| `fan.floorRaised` | The stall watch nudged Pyren's fan floor up because the fans kept stalling at the current floor. | `{ fromRpm, toRpm, stalls, reachedDriverFloor }` — `reachedDriverFloor` means the floor has reached the driver's own minimum; a recalibration is the next step. |
+
+A change that was **refused** publishes nothing. The mode did not move, and a UI that redrew for it would be showing a state the machine is not in.
+
+## `power.mode` sources
+
+The `source` field on a `power.mode` event says who caused the change:
+
+| `source` | Who asked |
+|---|---|
+| `request` | A `power.setMode` — the app, `pyren-ctl`, or the widget's own click. |
+| `hotkey` | The laptop's performance key. |
+| `auto` | The daemon's background supervisor, acting on battery or load conditions. |
+| `tuning` | A `power.setTuning` that re-applied the mode currently in force. |
+| `osProfile` | A `power.setApplyToOsProfile` that re-applied it. |
+| `external` | Nobody asked the daemon: the firmware profile was moved from outside (Fn+P, the desktop's battery menu, a power manager) and the daemon followed it. |
+
+## `hotkey.pressed` and the `action` field
+
+A current daemon always sends `action: "show"` on a `hotkey.pressed` event. The press puts the widget on screen with the mode currently in force highlighted — **it changes nothing**. The user picks a mode by clicking in the widget, which issues an ordinary `power.setMode` like any other.
+
+Daemons before this sent `action: "powerCycle"` with additional fields (`mode`, `from`, `askedFor`, `changed`, `applied`, `failed`). A client that needs to work against both should branch on `action`, treat an absent `action` as `"powerCycle"`, and read `changed: false` with a non-empty `failed` as "the key worked, the machine refused."
+
+## Unknown topics
+
+An unknown `topic` is not an error. A newer daemon may publish topics this client has never seen. **Ignore unknown topics** and keep polling — the same principle as treating an unknown `error.kind` as `failed`.

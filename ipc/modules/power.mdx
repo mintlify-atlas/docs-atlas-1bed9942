@@ -1,0 +1,198 @@
+---
+title: "power Module: Profiles, Tuning, and Auto-Switching"
+sidebarTitle: "power"
+description: "The power module manages Eco/Balanced/Performance/Unlimited profiles, per-mode power envelope tuning, OS profile integration, and the background auto-switching supervisor."
+---
+
+The `power` module drives the laptop's firmware profile, optionally the OS power manager, and optionally the CPU power envelope. It is the control surface behind the four-mode switch that defines OMEN Gaming Hub's primary UI, extended with per-mode tuning, a background supervisor that reacts to plugging/unplugging and load, and a persistence layer so the supervisor keeps running between reboots. The module works on any machine with at least one supported mechanism — ACPI platform profile, power-profiles-daemon, or per-CPU EPP hints.
+
+## Methods
+
+| Method | Params | Result | Status |
+|---|---|---|---|
+| `power.getState` | none | Current mode, backend state, power envelope, battery reading, supervisor config | ✅ Implemented |
+| `power.setMode` | `{ "mode": "eco" \| "balanced" \| "performance" \| "unlimited" }` | `{ "applied": [...], "failed": [...] }` | ✅ Implemented |
+| `power.setAutoConfig` | Full auto config object | Stored config + disk-write status | ✅ Implemented |
+| `power.setRestoreOnStart` | `{ "enabled": bool }` | As `getState` | ✅ Implemented |
+| `power.setTuning` | `{ "mode"?, "pl1W"?, "pl2W"?, "turbo"? }` | As `getState`; refusals documented below | ✅ Implemented |
+| `power.setApplyToOsProfile` | `{ "enabled": bool }` | As `getState` | ✅ Implemented |
+
+---
+
+## A mode is a profile in three separable parts
+
+Every mode drives up to three independent mechanisms. They are separate because a user may legitimately want them owned by different things.
+
+| Part | Mechanism | Applied |
+|---|---|---|
+| The laptop's own profile | ACPI `platform_profile` | Always, when the hardware supports it |
+| The OS profile | power-profiles-daemon / TLP / auto-cpufreq | Only when `applyToOsProfile` is `true` — **off by default** |
+| The power envelope | powercap PL1 / PL2 + turbo | Only when a tuning entry has been set for this mode |
+
+### Mode mapping
+
+| | Eco | Balanced | Performance | Unlimited |
+|---|---|---|---|---|
+| Firmware profile | `low-power` | `balanced` | `performance` | `performance` |
+| OS profile | `power-saver` | `balanced` | `performance` | `performance` |
+| PL1 / PL2 | *stock* | *stock* | *stock* | *stock* |
+| Turbo | on | on | on | on |
+
+`Unlimited` maps onto the same firmware profile as `Performance`. What distinguishes it is a per-mode power envelope applied on top — not a different platform profile. No mode ships with a non-stock envelope; it must be configured explicitly via `power.setTuning`.
+
+### Mechanism priority for the OS half
+
+The OS portion of `setMode` tries, in order:
+
+1. **`/sys/firmware/acpi/platform_profile`** — the firmware-level switch. Mode names are matched against `platform_profile_choices`; `low-power`, `quiet`, and `cool` all count as Eco.
+2. **power-profiles-daemon** (`powerprofilesctl`) — used when the firmware exposes no profile of its own.
+3. **`energy_performance_preference`** (intel\_pstate / amd-pstate EPP) — only where no power manager is present to delegate to, and only when `scaling_driver` is `intel_pstate` or `amd-pstate-epp`.
+
+`getState`'s `backend.otherManagers` lists power managers that are active but not driven by this daemon. While any is present, the EPP fallback is skipped and `failed` names the manager left in charge rather than writing a hint it would silently put back.
+
+<Note>
+`applyToOsProfile` **defaults to `false`**. The OS profile belongs to whatever power manager the user installed; a fresh Pyren installation does not start overriding it. A `power.json` that already stores `true` keeps it; one without the field reads as `false`.
+</Note>
+
+---
+
+## `power.setMode` result
+
+Each call to `setMode` is best-effort. The result lists what actually changed rather than reporting a single success or failure:
+
+```json
+{ "applied": ["power-profiles-daemon=performance"],
+  "failed":  ["energy_performance_preference: Permission denied (os error 13)"] }
+```
+
+<Note>
+If nothing at all could be applied the call returns an error rather than an empty `applied` list. Writing EPP and `platform_profile` needs root; power-profiles-daemon accepts an unprivileged caller through polkit.
+</Note>
+
+---
+
+## Power envelope (`limits`)
+
+`power.getState` includes a `limits` object describing the package power controls:
+
+```json
+"limits": {
+  "available":      true,
+  "turboAvailable": true,
+  "stock":   { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
+  "current": { "pl1Uw": 77000000, "pl2Uw": 77000000, "pl4Uw": 168000000 },
+  "locked":  null,
+  "turbo":   true,
+  "tuning":  {
+    "eco": { "pl1Percent": 100, "pl2Percent": 100, "turbo": true }
+  }
+}
+```
+
+Values are in **microwatts** (`Uw`). `locked` is `"msr"` or `"sysfs"` when the firmware has locked PL1/PL2 until the next reboot, `null` when unlocked or when nothing could tell.
+
+### Rules governing the envelope
+
+- **Nothing ever asks for more than stock.** Raising a limit past what the firmware shipped is overclocking and is out of scope for mode switching.
+- **`setTuning` speaks watts; the daemon stores percentages.** Watts are what the user sees; percentages are what survives being restored onto different hardware with a different TDP.
+- **PL4 is left at stock.** The peak-power ceiling exists to keep the VRM in spec; lowering it buys nothing a lower PL1 has not already bought.
+- **A mode nobody tuned writes nothing.** The envelope is left to the firmware until someone puts a measured number in through `power.setTuning`. Leaving a tuned mode puts the stock envelope back once, so its cap does not outlive it.
+- **Limits are always ordered: PL1 ≤ PL2 ≤ PL4.** The daemon enforces this and will not accept a `stockLimits` hand-edit that violates it.
+- **Every write is read back.** A limit more than 1 W from what was asked for, or turbo not in the requested state, is reported in `failed`.
+
+---
+
+## `power.setTuning`
+
+Adjusts the power envelope for one mode. All fields are optional; omitting `mode` targets the mode currently in force.
+
+```json
+{ "mode": "performance", "pl1W": 65, "pl2W": 65, "turbo": true }
+```
+
+When the tuning change affects the mode currently in force, it is re-applied immediately so a watt slider is audible at once rather than at the next mode switch.
+
+### Error keys
+
+| Error key | Kind | When |
+|---|---|---|
+| `power.err.badMode` | `invalidParams` | `mode` is present but not one of the four valid values |
+| `power.err.wattsNumber` | `invalidParams` | `pl1W` or `pl2W` is present but not a number; `params: { key }` |
+| `power.err.turboBool` | `invalidParams` | `turbo` is present but not a boolean |
+| `power.err.wattsPositive` | `invalidParams` | A limit of zero, negative, or NaN |
+| `power.err.limitsCrossed` | `invalidParams` | The result would put PL1 above PL2; `params: { pl1, pl2 }` in watts |
+| `power.err.noPackageLimit` | `notCapable` | No RAPL package zone available to tune |
+| `power.err.limitsLocked` | `notCapable` | `pl1W`/`pl2W` requested while the firmware has limits locked; `params: { source }` (`msr` / `sysfs`). `turbo` alone is still accepted |
+
+A request with any field the daemon does not understand is refused whole — nothing is stored.
+
+---
+
+## Automatic switching
+
+`power.getState`'s `auto` object configures a background supervisor thread that runs whether or not the app is open. It has two independently switchable systems plus a thermal rule:
+
+| System | When it acts | What it does |
+|---|---|---|
+| `ecoOnBattery` | Machine is unplugged | Goes to `preferredOnBattery` at once, then moves between Eco and Balanced |
+| `performanceOnLoad` | Machine is plugged in | Goes to `preferredOnMains` at once, then moves between Balanced and Performance |
+| `backOffWhenHot` | Machine is over `tempHighC` | Holds one step below its baseline until temperature drops back under `tempLowC` |
+
+```
+on battery:  Eco  <--->  Balanced
+on mains:          Balanced  <--->  Performance
+```
+
+Each source has a preferred mode: `preferredOnBattery` (default `eco`) and `preferredOnMains` (default `performance`). These are where a power-source change lands and where refinement returns once whatever moved it has passed.
+
+### Automatic switching rules (priority order)
+
+1. **Hot** (latched, `backOffWhenHot`) → one step below the baseline
+2. **Battery at or under `batteryLowPercent`** (on battery) → Eco
+3. **Mode outside the source's range, not set by hand** → nearest end of the range
+4. **Load ≥ `loadHigh`** → one step above the baseline, within range
+5. **Load ≤ `loadLow`** → one step below the baseline, within range
+6. **In between** → back to the baseline once load has crossed the *middle* of the band towards it; otherwise hold
+
+### Important supervisor behaviours
+
+- **Unlimited is never chosen automatically.** It is the one mode that removes the daemon's own limits; the user must ask for it. The supervisor does move *out* of Unlimited when the power source changes.
+- **A mode set by hand becomes the new baseline** (via `setMode` or the hotkey) until the power source next changes. `manualOverrideSecs` only pauses refinement entirely; after it, the hand-picked mode becomes the refinement baseline.
+- **A new power source must be seen on 2 consecutive samples** before it is believed. Two source-triggered switches are at least 30 s apart.
+- **Heat outranks load.** A machine is hot because it is busy; if load won the thermal rule would never fire.
+
+### Supervisor config fields
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Master switch. Off: only `setMode` changes the mode |
+| `preferredOnBattery` / `preferredOnMains` | Home mode for each source (`eco`/`balanced` and `balanced`/`performance`) |
+| `loadHigh` / `loadLow` | 1-minute load average **per core** thresholds for high/low load. The gap between them is the dead band |
+| `batteryLowPercent` | At or below this charge, Eco is preferred on battery regardless of load |
+| `samplesToSwitch` | Consecutive agreeing samples required before a refinement (transitions use their own 2-sample confirmation) |
+| `intervalSecs` | How often the supervisor samples |
+| `manualOverrideSecs` | How long a manual `setMode` suspends refinement entirely |
+| `backOffWhenHot` | Whether thermal state is a reason to step down. On by default |
+| `tempHighC` / `tempLowC` | The temperature at or above which the machine is hot, and the lower threshold it must return to. Latched between the two — deliberately wider than the load band |
+
+`setAutoConfig` validates on receipt: `loadLow` ≥ `loadHigh`, `tempLowC` ≥ `tempHighC`, and `batteryLowPercent` outside 0–100 are all refused with `power.err.loadBand` / `power.err.tempBand` / `power.err.batteryPercent`. The stored config is left unchanged on any validation failure.
+
+### Thermal reporting
+
+```json
+"thermal": { "available": true, "tempC": 74.0, "hot": true }
+```
+
+The temperature is the hotter of the CPU package and the GPU, read from hwmon by driver name. `hot` is **latched**: at 74 °C it can be either `true` or `false` depending on which threshold was crossed last — a client cannot recompute it from `tempC` alone.
+
+---
+
+## Persistence and restore
+
+Settings are stored in `power.json`. `getState` reports `configPath` and `configSaveError` when the last write failed. Calls that change settings return `{ saved, saveError }` — a setting applied but not written is in effect now and the UI should say so, rather than the call failing.
+
+`restoreModeOnStart` re-applies the saved mode when the daemon starts. It is **off by default**. A machine that boots on battery does not get `performance` or `unlimited` back; it gets `preferredOnBattery` instead.
+
+### Battery detection notes
+
+`supply.onBattery` is `null` on machines with no battery — this is **not** the same as "on battery". Peripherals (wireless mice, keyboards) also appear under `/sys/class/power_supply`; they are excluded via `scope=Device` so a discharging mouse does not make a desktop look like an unplugged laptop.

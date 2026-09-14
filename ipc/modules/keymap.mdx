@@ -1,0 +1,117 @@
+---
+title: "keymap Module: System-wide Key Remapping"
+sidebarTitle: "keymap"
+description: "The keymap module remaps physical keys to other keycodes system-wide via a /dev/uinput virtual device, without keyd or a udev hwdb entry."
+---
+
+The `keymap` module creates a `/dev/uinput` virtual keyboard and remaps physical key events at the evdev layer, below any compositor or desktop session. It works because the daemon already opens `/dev/input/event*` directly for the `hotkey` module — a `/dev/uinput` virtual device reusing that same access is one fewer moving part than a second daemon's config file, and it means no `keyd`, no `udev hwdb` entry, and no compositor reconfiguration. Every grabbed keyboard's events are forwarded through a single virtual device, with a keycode substituted wherever a mapping matches.
+
+## Methods
+
+| Method | Params | Result |
+|---|---|---|
+| `keymap.getStatus` | none | `{ "enabled", "running", "detail", "devices": [string], "mappings": [{ "from": { "device"?, "keycode" }, "to" }] }` |
+| `keymap.setMapping` | `{ "from": { "device"?: string, "keycode": number }, "to": number }` | as `getStatus` |
+| `keymap.removeMapping` | `{ "device"?: string, "keycode": number }` | as `getStatus` |
+| `keymap.setEnabled` | `{ "enabled": bool }` | as `getStatus` |
+
+### `keymap.getStatus`
+
+Returns the current state of the remapper.
+
+**Params:** none
+
+**Result:**
+
+| Field | Description |
+|---|---|
+| `enabled` | Whether the remapper is supposed to be running |
+| `running` | Whether the uinput device is live and keyboards are grabbed |
+| `detail` | A `Msg` object describing the current state |
+| `devices` | List of `/dev/input/event*` paths currently grabbed |
+| `mappings` | The active substitution table: `[{ "from": { "device"?, "keycode" }, "to" }]` |
+
+`detail` is a `Msg` object — `{ key, params?, text }`. A client that localises renders `key` + `params`; one that does not shows `text`. Refusals from `setMapping`, `removeMapping`, and `setEnabled` carry `key`/`params` beside `message`.
+
+### `keymap.setMapping`
+
+Adds or updates a keycode substitution.
+
+**Params:** `{ "from": { "device"?: string, "keycode": number }, "to": number }`
+
+**Result:** as `getStatus`.
+
+`keycode` values are Linux evdev codes — `KEY_A` = 30, and so on — the same vocabulary `hotkey.learn`'s `press.keycode` already uses. A client translates between display names and numeric codes once, at the UI layer.
+
+Omitting `device` makes the mapping match that keycode from any grabbed keyboard. Providing `device` scopes the substitution to one specific device path.
+
+### `keymap.removeMapping`
+
+Removes a mapping by its `from` keycode (and optionally device).
+
+**Params:** `{ "device"?: string, "keycode": number }`
+
+**Result:** as `getStatus`.
+
+### `keymap.setEnabled`
+
+Starts or stops the remapper.
+
+**Params:** `{ "enabled": bool }`
+
+**Result:** as `getStatus`.
+
+<Note>
+`keymap.setEnabled` defaults to **`false`**, unlike `hotkey.setEnabled`. The keymap must be turned on deliberately, after mappings have been configured. This is because enabling it grabs keyboards via `EVIOCGRAB`, which silences those devices for every other reader — including `hotkey`. A keymap that starts automatically at daemon startup with an empty or misconfigured substitution table could take away keyboard input before anyone could fix it.
+</Note>
+
+## Keycodes
+
+Keycodes are Linux evdev codes — the same vocabulary `hotkey.learn` reports and `hotkey.setTriggers` accepts. Common examples:
+
+| Key | evdev code |
+|---|---|
+| `KEY_A` | 30 |
+| `KEY_ESC` | 1 |
+| `KEY_CAPSLOCK` | 58 |
+| `KEY_LEFTMETA` | 125 |
+
+The mapping `{ "from": { "keycode": 58 }, "to": 1 }` remaps Caps Lock to Escape system-wide, on every keyboard. A client never has to know whether it is speaking DOM `KeyboardEvent.code` strings or evdev integers — it translates at the UI layer, once, rather than the daemon accepting two vocabularies for the same number.
+
+## Grabbing and the effect on `hotkey`
+
+When the keymap is enabled, the module calls `EVIOCGRAB` on each grabbed device. This makes the module's file descriptor the **only** one the kernel delivers events to on that device — the `hotkey` module's own reader included. As a result:
+
+**Enabling a keymap on the keyboard where the vendor performance key lives stops `hotkey` from hearing it for as long as the remapper runs on that device.**
+
+The substitute keycode (the `to` value) is what gets forwarded through the uinput device, so if the mapping includes the performance key, `hotkey` can still be triggered via the remapped code if configured to match it. Without such a mapping, the key is silently consumed.
+
+This interaction is the main reason `enabled` defaults to `false`. The `hotkey` module's `enabled` only gates whether a *heard* key fires the action — it never affects whether the key is heard. The keymap's `enabled` gates the grab itself.
+
+## One virtual keyboard
+
+All grabbed keyboards' events are forwarded through a **single** `/dev/uinput` virtual device. A mapping with no `device` field matches that keycode from any of them. Naming a specific `device` in `from.device` scopes the substitution to one source, which round-trips correctly through `getStatus` but is invisible at the virtual device level — what the compositor sees is one keyboard, not several.
+
+The common case — one keyboard, one remapping — does not need `from.device` at all.
+
+## What keymap can and cannot do
+
+**Can do:**
+- Replace any keycode with any other keycode, system-wide, without kernel or compositor configuration.
+- Scope a substitution to a specific physical device.
+- Run at the evdev layer, below any session or compositor.
+
+**Cannot do:**
+- Chords (mapping one key to a sequence of keys).
+- Macros (mapping one key to a sequence of events).
+- Modifier injection or synthetic Shift/Ctrl combinations.
+
+Only a bare keycode substitution is implemented. Chords and macros remain in the app's "coming soon" scope; they are a sequence of synthetic events that have no reason to live in a plain substitution module.
+
+<Warning>
+Be careful when enabling the keymap while editing from the same machine. A mistake in the substitution table — remapping a key you need to a code that does nothing, or grabbing the keyboard before the mapping is correct — can take away keyboard access. Use SSH or a second keyboard to recover if this happens, or disable the service and restart with the daemon unprivileged. Test new mappings from a spare keyboard or over a remote connection when possible.
+</Warning>
+
+## Hardware status
+
+The ioctl values used by this module (`EVIOCGRAB`, `UI_SET_EVBIT`, `UI_SET_KEYBIT`, `UI_DEV_SETUP`, `UI_DEV_CREATE`, `UI_DEV_DESTROY`) are derived from the same `_IOC` formula the kernel headers use and verified against known-good values in `crates/keymap/src/raw.rs`. The full grab-and-remap cycle has not yet been run on hardware — testing against the development machine's own keyboard from inside the same session it is being edited in is not a safe first test. A spare keyboard or an SSH session is the right environment for that confirmation.

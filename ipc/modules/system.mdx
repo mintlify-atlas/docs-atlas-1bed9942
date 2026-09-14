@@ -1,0 +1,183 @@
+---
+title: "system Module: Machine Info and Live Metrics"
+sidebarTitle: "system"
+description: "The system module exposes system.getInfo for machine identity and compatibility, and system.getMetrics for live CPU, GPU, memory, disk, network, and process data."
+---
+
+The `system` module is not HP-specific. It reads `/proc`, `/sys`, `statvfs`, and `lspci`, so it reports real data on any Linux machine. That is deliberate: it lets the vitals UI be developed and tested away from an OMEN laptop, and it answers the "is this hardware compatible?" question that the rest of the app depends on. The `system` module is the one module `core.capabilities` will always report as `supported: true`.
+
+## Methods
+
+| Method | Params | Result | Status |
+|---|---|---|---|
+| `system.getInfo` | none | Machine identity, compatibility summary, and privilege state | ✅ Implemented — cached at daemon startup |
+| `system.getMetrics` | none | Live CPU, GPU, memory, disk, network, and process readings | ✅ Implemented — no privileges needed |
+
+---
+
+## `system.getInfo`
+
+Returns a cached snapshot of machine identity collected at daemon startup, plus the compatibility verdict and privilege state that the rest of the app branches on.
+
+```json
+{
+  "vendor":       "ASUS",
+  "model":        "PRIME B660M-K D4",
+  "boardName":    "PRIME B660M-K D4",
+  "boardVendor":  "ASUSTeK COMPUTER INC.",
+  "biosVersion":  "3010",
+  "biosDate":     "12/11/2023",
+  "kernel":       "7.2.2-1-cachyos",
+  "cpu":          "12th Gen Intel(R) Core(TM) i5-12400F",
+  "cpuCores":     12,
+  "gpus":         ["NVIDIA Corporation GA106 [GeForce RTX 3060]"],
+  "formFactor":   "desktop",
+  "compatibility": "controllable",
+  "controls": {
+    "fanMode":   false,
+    "fanSpeed":  false,
+    "powerMode": true
+  },
+  "supported": true,
+  "reason": {
+    "key":    "system.reason.accepts",
+    "params": { "list": "power modes" },
+    "text":   "this machine accepts: power modes"
+  },
+  "privileges": {
+    "root":       true,
+    "perfEvents": true
+  }
+}
+```
+
+Identity fields (`vendor`, `model`, `boardName`, `boardVendor`, `biosVersion`, `biosDate`, `cpu`, `gpus`) are read from `/sys/class/dmi/id`, `/proc/cpuinfo`, and `lspci`. Firmware placeholder strings such as `"To be filled by O.E.M."` or `"System Product Name"` are returned as `null` rather than shown verbatim to the user.
+
+`reason` is a **`Msg` object** — it carries a stable `key`, interpolation `params`, and pre-rendered English `text`. A client with a translation catalog renders `key` + `params`; one without it shows `text`.
+
+### `controls` — what this machine can actually do
+
+`controls` is populated at startup by asking each hardware module what it could verify. It is measured, not looked up from a model table.
+
+| Field | `true` when |
+|---|---|
+| `fanMode` | `pwm1_enable` exists — `auto` and `max` modes can be commanded via WMI |
+| `fanSpeed` | `pwm1` exists — a specific RPM percentage can be commanded; only exposed for boards in the driver's feature table |
+| `powerMode` | At least one power mechanism answered: ACPI platform profile, power-profiles-daemon, or the CPU energy-performance hint |
+| `lightbar` | The 4-zone light strip answered an ACPI read. Named for the probed device; the per-key keyboard is a different device on a different bus |
+
+### `compatibility` — the summary
+
+`compatibility` is a summary of the `controls` fields, not an independent probe.
+
+| Value | Meaning |
+|---|---|
+| `controllable` | At least one `controls` field is `true`; `reason` says which |
+| `monitoringOnly` | The `hp-wmi` interface is present but nothing accepted control; fan speeds and temperatures still read |
+| `unsupported` | Neither condition; this is an ordinary Linux machine as far as this app is concerned |
+
+<Warning>
+**Gate UI on `controls`, not on `compatibility`.** A machine can be `controllable` and still refuse a specific control. Board `8D2F`, for example, has `fanMode: true` but `fanSpeed: false` — the fan page must offer Auto and Max while hiding the percentage slider. Checking `compatibility === "controllable"` and enabling all fan controls is a bug on that board.
+</Warning>
+
+### `privileges` — the daemon, not the machine
+
+`privileges` describes what the daemon was started with. It is fixed at startup and never changes mid-session.
+
+| Field | Meaning |
+|---|---|
+| `root` | Whether the daemon is running as root; needed to write sysfs fan and power controls |
+| `perfEvents` | Whether the i915 perf PMU opened (`CAP_PERFMON`); needed to read integrated-GPU utilisation; `null` means the GPU has no integrated graphics or the check was skipped |
+
+Without `privileges` in the response, a client cannot distinguish "this GPU reports nothing" from "we were not allowed to ask" — and would tell the user their hardware is broken when the real answer is "run the daemon as root".
+
+---
+
+## `system.getMetrics`
+
+Returns a live snapshot of system utilisation. No privileges are needed. The daemon keeps a previous sample internally so that rate fields (CPU %, network throughput, per-process CPU) are real deltas from the first call onward.
+
+```json
+{
+  "cpu": {
+    "usagePercent":    47.8,
+    "perCorePercent":  [12.1, 55.3, 38.0, 71.2],
+    "clocksMhz":       [3200, 3400, 3100, 3600],
+    "tempC":           56.0
+  },
+  "memory": {
+    "totalGb":      15.4,
+    "usedGb":        6.9,
+    "availableGb":   8.5,
+    "percent":      45.0,
+    "swapTotalGb":  33.4,
+    "swapUsedGb":    3.5
+  },
+  "temperatures": [
+    { "chip": "coretemp", "label": "Package id 0", "celsius": 56.0 }
+  ],
+  "fans": [
+    { "chip": "nct6798", "label": "fan1", "rpm": 1012 }
+  ],
+  "disks": [
+    { "mount": "/", "device": "/dev/nvme0n1p3", "fstype": "btrfs",
+      "totalBytes": 999129350144, "freeBytes": 484879581184 }
+  ],
+  "network": {
+    "upMbps":   0.01,
+    "downMbps": 0.0,
+    "interfaces": []
+  },
+  "gpus": [
+    { "name":          "NVIDIA GeForce RTX 3060",
+      "driver":        "nvidia",
+      "usagePercent":  99.0,
+      "tempC":         74.0,
+      "memUsedMb":     7161.0,
+      "memTotalMb":    12288.0,
+      "powerW":        169.5,
+      "clockMhz":      1837.0,
+      "integrated":    false }
+  ],
+  "processes": [
+    { "pid": 32556, "name": "re4.exe",
+      "cpuPercent": 41.8, "memMb": 2847.0, "gpuPercent": 62.4 }
+  ]
+}
+```
+
+### Field notes
+
+**CPU**
+
+- `usagePercent`, `perCorePercent`, and `clocksMhz` are delta-based; the sampler is primed at construction so the first call returns real numbers, not zeroes.
+- `tempC` prefers a package sensor from a CPU driver (`coretemp`, `k10temp`, `zenpower`), then the hottest individual core, then `acpitz`. `null` if nothing answered.
+
+**Memory**
+
+- All values in GiB. `swapTotalGb` / `swapUsedGb` are zero on machines with no swap configured.
+
+**Disks**
+
+- Deduplicated by device: btrfs subvolumes and bind mounts appear once, at the shallowest mount point.
+
+**Network**
+
+- `upMbps` / `downMbps` are deltas (throughput since the previous sample).
+- Virtual interfaces (`lo`, `veth*`, `docker*`, `br-*`, `virbr*`, `vnet*`, `tap*`) are excluded so container traffic is not counted twice.
+
+**GPUs**
+
+- NVIDIA cards are read via `nvidia-smi`. Other cards use DRM sysfs: `gpu_busy_percent` and `mem_info_vram_*` (amdgpu), `gt_act_freq_mhz` / `tile0/gt0/freq0/act_freq` for the Intel GT clock, and the i915 perf PMU for Intel utilisation (requires `CAP_PERFMON` — see `privileges.perfEvents`).
+- GPU names are resolved once through `lspci`.
+- Fields a driver does not expose are `null`, not zero. Draw a `null` utilisation and a zero utilisation differently.
+- `integrated` is `true` for the GPU in the CPU package (hangs off root bus `0000:00:…`) and `false` for a discrete card behind a PCIe bridge. Hybrid laptops have both; label them separately, because which one is busy is usually the question being asked.
+
+**Processes**
+
+- The busiest 12 processes **by CPU**. `cpuPercent` is a share of the whole machine (0–100), not of one core.
+- `gpuPercent` comes from the kernel's DRM fdinfo interface (`/proc/<pid>/fdinfo/<fd>`, `drm-engine-*` keys) — the same source `nvtop` reads, covering i915, xe, and amdgpu. `null` means the driver publishes no per-client accounting (NVIDIA's proprietary driver does not); `null` is not the same as idle, so draw the two states differently.
+
+**Temperatures / fans (generic)**
+
+- `temperatures` and `fans` are raw hwmon readings — every chip the kernel exposes. They complement the per-module `cpuTempC` / `gpuTempC` fields reported by the `fan` module.

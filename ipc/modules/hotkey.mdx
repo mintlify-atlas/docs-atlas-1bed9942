@@ -1,0 +1,146 @@
+---
+title: "hotkey Module: Performance Key Binding and Events"
+sidebarTitle: "hotkey"
+description: "The hotkey module listens on /dev/input for a user-configured keyboard shortcut and publishes hotkey.pressed events to trigger the OSD widget."
+---
+
+The `hotkey` module reads `/dev/input` directly — below any compositor or desktop session — and fires an event on the daemon's event bus whenever a configured key combination is pressed. It deliberately bypasses compositor keybindings: one shortcut works on Hyprland, GNOME, KDE, and X11 alike, continues working at the login screen before any session exists, and is configured in one place instead of per-desktop. Nothing is bound by default, because there is no reliable table of "the OMEN key is keycode N" — which key a laptop sends, whether the kernel has assigned a keycode for it, and which `/dev/input` device it appears on vary between machines of the same model. The machine is asked instead.
+
+## Methods
+
+| Method | Params | Result |
+|---|---|---|
+| `hotkey.getStatus` | none | What is bound, what is being watched, and why nothing is if nothing is |
+| `hotkey.learn` | `{ "timeoutMs"?: number, "bind"?: bool }` | `{ "press": { device, keycode, scancode, modifiers, describe, label } \| null, "timedOut", "bound" }` |
+| `hotkey.setTriggers` | `{ "triggers": [{ "device"?, "keycode"?, "scancode"?, "modifiers"? }] }` | as `getStatus` |
+| `hotkey.setEnabled` | `{ "enabled": bool }` | as `getStatus` |
+| `hotkey.press` | none | `{ "fired": true }` |
+
+### `hotkey.getStatus`
+
+Returns what is currently bound and whether the watcher is running.
+
+**Params:** none
+
+**Result:** The status object, including:
+
+| Field | Description |
+|---|---|
+| `triggers` | The machine-readable bound shortcut(s) |
+| `label` | The bound shortcut written as a human-readable string, e.g. `"Ctrl+Alt+P"`, or `null` when nothing is bound |
+| `enabled` | Whether a heard key fires the action |
+| `supported` | `true` when the hardware is present; `false` only when no `/dev/input` devices exist at all |
+| `detail` | A `Msg` object — the one sentence that says why nothing happens when nothing does (not root, no key bound, switched off) |
+
+`label` is for display, not for parsing. `triggers` is the machine-readable form. `detail` and `press.describe` (from `hotkey.learn`) stay bare strings; a shortcut name and a `keycode N` diagnostic are not translated.
+
+### `hotkey.learn`
+
+Holds the connection open until a key is pressed or the timeout expires, then optionally binds what was caught.
+
+**Params:** `{ "timeoutMs"?: number, "bind"?: bool }`
+
+**Result:** `{ "press": { device, keycode, scancode, modifiers, describe, label } | null, "timedOut": bool, "bound": bool }`
+
+Example workflow:
+
+```sh
+pyren-ctl hotkey learn    # press your key while the daemon waits
+pyren-ctl hotkey get      # confirm what was caught
+```
+
+<Note>
+A timed-out learn is **not an error**. `{ "press": null, "timedOut": true }` is the honest description of a laptop whose key never reaches Linux at all — for example, the vendor Fn+P on an OMEN, which the firmware consumes before the kernel sees it. That is a real hardware answer, not a failure of this call.
+</Note>
+
+The learn window captures exactly one press and reports it. A modifier key going down does not count as a press — the modifier updates what is held and waits for the next key. This is what makes learning a combination work: the modifier necessarily goes down first, so a learn window that took the first key to arrive would bind `Ctrl` every single time.
+
+### `hotkey.setTriggers`
+
+Replaces the bound shortcut with an explicit trigger list.
+
+**Params:** `{ "triggers": [{ "device"?: string, "keycode"?: number, "scancode"?: number, "modifiers"?: { ctrl, shift, alt, meta } }] }`
+
+**Result:** as `getStatus`.
+
+`modifiers` is matched **exactly**: `Ctrl+P` does not fire on `Ctrl+Shift+P`. Left and right are the same modifier; `KEY_RIGHTALT` (AltGr) counts as Alt. A modifier alone is never accepted as a trigger — `setTriggers` refuses one.
+
+### `hotkey.setEnabled`
+
+Enables or disables the shortcut without clearing it.
+
+**Params:** `{ "enabled": bool }`
+
+**Result:** as `getStatus`.
+
+When disabled, the watcher still opens `/dev/input` (so key events are consumed and not passed to the compositor), but a matched press does nothing. This is different from having no trigger: the binding is remembered, just silenced.
+
+### `hotkey.press`
+
+Fires the hotkey action without a physical key press. Publishes the same `hotkey.pressed` event the real key would.
+
+**Params:** none
+
+**Result:** `{ "fired": true }`
+
+This is what the event bus description uses as an example trigger in the protocol — useful for testing the OSD widget without needing the physical key.
+
+## Learning a hotkey
+
+The standard workflow to bind a key:
+
+```sh
+# 1. Open a learn window (daemon holds the connection open for up to 5 s by default)
+pyren-ctl hotkey learn
+
+# 2. Press the key you want to bind (e.g. the OMEN key, a media key, any combination)
+
+# 3. Confirm what was captured
+pyren-ctl hotkey get
+```
+
+With `"bind": true` in the params, `hotkey.learn` binds whatever it catches automatically. Without it, the press is reported and left for `hotkey.setTriggers` to record.
+
+## Key combinations and modifiers
+
+`modifiers` is `{ ctrl, shift, alt, meta }` — four booleans. The shortcut fires only when the modifier state matches exactly, so `Ctrl+P` does not activate on `Ctrl+Shift+P`. This prevents a shortcut from hijacking whatever the user has bound to a superset.
+
+A **modifier alone is never a trigger**. The watcher never reports a bare modifier press, and `setTriggers` refuses a trigger that consists of modifiers only. This is both intentional and necessary: learning a combination requires that the modifier go down first, and if the first key to arrive were taken as the trigger, it would always be the modifier.
+
+## Keys without keycodes
+
+Two kinds of events arrive from `/dev/input`:
+
+- A key the kernel has assigned a code for: `EV_MSC/MSC_SCAN` then `EV_KEY`.
+- A key it has not: the scancode alone, and nothing else.
+
+The second kind is bindable here by its `scancode` alone. **No `setkeycodes`, no `udev hwdb` entry** — the daemon changes nothing about the system to hear the key, and because the compositor never sees such a key, there is no collision to worry about.
+
+The cost is in `repeatGuardMs`: a key with no keycode reports the same bare scancode on press and on release, with no way to tell the two apart. Without a short coalescing window, one press would produce two events. `repeatGuardMs` defaults to 300 ms.
+
+## Why `/dev/input` and not compositor keybindings
+
+The module reads hardware events directly rather than registering with the running desktop. Consequences:
+
+- Works on any desktop environment without per-desktop configuration.
+- Works at the login screen, before any session has started.
+- One binding survives a session switch.
+- Works for keys the compositor never sees (scancodes with no assigned keycode).
+
+The tradeoff is that reading `/dev/input` needs root. An unprivileged daemon cannot open the device files.
+
+<Note>
+An unprivileged daemon reports `supported: true` — the keyboard is physically present — and refuses `hotkey.learn` with `permissionDenied`, whose fix is the systemd unit. This is a deliberate choice: reporting the feature as `unsupported` would hide the fix along with the feature.
+</Note>
+
+## What the hotkey does (and does not do)
+
+The `hotkey.pressed` event always carries `action: "show"` in the current daemon. This puts the OSD widget on screen with the current power mode highlighted. **It changes nothing by itself.** The user picks a mode by clicking in the widget, which is an ordinary `power.setMode` call like any other.
+
+Pressing the key again dismisses the widget — that is the widget's own logic, not the daemon's, which publishes the same event either way. One key, both directions: dismiss with the key you opened it with.
+
+The `repeatGuardMs` coalescing window is what makes this work. The vendor key sends the same scancode on press and on release; without coalescing, one physical press would open and close the widget simultaneously, leaving the key looking dead.
+
+## Privacy
+
+The hotkey module is a root process reading keyboards. A key that matches no trigger is compared and dropped immediately — never stored, never logged, never sent anywhere. The only exception is a learn window the user opened deliberately, which lasts seconds and reports exactly one press: the one the user pressed to answer the question.

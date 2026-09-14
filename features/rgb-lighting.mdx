@@ -1,0 +1,78 @@
+---
+title: "Keyboard RGB Lighting Control in Pyren"
+sidebarTitle: "RGB Lighting"
+description: "Configure keyboard RGB lighting with breathing, spectrum, rainbowWave, wave, and fade effects. Save up to 15 configurations and control brightness and power behavior."
+---
+
+Pyren's RGB module controls two pieces of hardware that are entirely unrelated underneath: a **4-zone lightbar** (driven over ACPI-WMI or kernel sysfs) and a **per-key RGB keyboard** (driven over USB HID). Both are probed at startup; only the 4-zone lightbar is currently driven. Neither is assumed from the laptop model name — hardware detection determines what is available.
+
+<Note>
+`acpi_call` is an **optional** dependency. If it is not installed, Pyren automatically falls back to the kernel's `rgb_zones` sysfs files where available. The app shows exactly which lighting features are accessible on your machine, and clearly distinguishes between "this hardware doesn't exist" and "the module needed to reach it isn't loaded." Installing `acpi_call` and querying again (`rgb.getCapabilities`) is a complete workflow that does not require restarting the daemon.
+</Note>
+
+## Hardware detection
+
+Pyren probes all three known lighting dialects in priority order and uses the first one that answers a read:
+
+| Dialect | Transport | Needs |
+|---|---|---|
+| `kernelZones` | `/sys/.../rgb_zones/zone00…03` sysfs files | A kernel with in-tree `hp-wmi` or `omen-rgb-keyboard` |
+| `fourZone` | WMI command `0x20009`, command types 2/3 | `acpi_call`, root |
+| `lightbar` | WMI command `0x20009`, command type 11 | `acpi_call`, root |
+
+`kernelZones` is preferred because it cannot send the firmware an unexpected command.
+
+The **per-key keyboard** is probed via USB — it looks for a device with `idVendor 0d62` on the bus. If no such device is found, per-key controls are hidden, not disabled with an error.
+
+## Lighting effects
+
+Pyren's effects engine runs entirely in the daemon, rewriting the four lightbar zones at a configurable frame rate (default 30 FPS). The firmware has no animation engine of its own.
+
+<CardGroup cols={2}>
+  <Card title="breathing" icon="lungs">
+    One colour per zone (cycled), dimming to black and back in a smooth pulse.
+  </Card>
+  <Card title="spectrum" icon="rainbow">
+    All zones walk the colour wheel together. Colour inputs are ignored.
+  </Card>
+  <Card title="rainbowWave" icon="wave-square">
+    The colour wheel spread across all zones, moving. Colour inputs are ignored.
+  </Card>
+  <Card title="wave" icon="water">
+    A colour pulse crosses a background colour. Two colours: the pulse and the background it crosses.
+  </Card>
+  <Card title="fade" icon="sun">
+    A list of colours faded through in order; a single colour fades to black and back.
+  </Card>
+</CardGroup>
+
+All effects accept a `speed` (1–10, where 5 is the base cycle and 10 is twice as fast) and up to eight colours. Missing colours use the effect's built-in defaults (listed by `rgb.listEffects`).
+
+## Brightness control
+
+Brightness is a **percentage** (0–100), not a raw hardware level. Setting brightness to zero **pauses** the effect entirely — the daemon stops writing frames and the keyboard holds its last frame — rather than faking black by writing zeros. This avoids visual flicker and unnecessary ACPI traffic.
+
+Brightness is automatically throttled based on machine state:
+
+| State | Behavior |
+|---|---|
+| On battery | Effect runs at `batteryFps` (default 15 FPS) |
+| Lid closed | Effect paused entirely |
+
+`getStatus.throttled` reports `"battery"`, `"lid"`, or `null`.
+
+## Power-on and power-off color sweeps
+
+`rgb.powerOn` sweeps the lights in from black, zone by zone from the left, to the static color configuration or to the effect's first frame. `rgb.powerOff` sweeps them out from right to left, with a running effect still moving underneath, and leaves the keyboard dark.
+
+Both sweeps take approximately 1.2 seconds. With `ifEnabled: true`, they fire only when `powerAnimation` is turned on — which is what the systemd suspend hook (`/usr/lib/systemd/system-sleep/pyren`, installed with the daemon service) uses automatically.
+
+## Saved configurations
+
+Up to **15** lighting configurations can be saved, stored in their own dedicated config file separate from other Pyren settings. Saved configurations include the static zone colors, any active effect, brightness, and FPS settings.
+
+With `restoreOnStart` enabled, the daemon re-applies the last active configuration (including any running effect) when it starts. Effects resume from where the effect logic would place them — not a frozen first frame.
+
+## Color format
+
+Colors are accepted as either `"#rrggbb"` hex strings or `[r, g, b]` arrays, so scripting does not require hex formatting. Components outside 0–255 are clamped rather than rejected — `[300, 0, 0]` is treated as maximum red. Colors are always reported back as `"#rrggbb"`.

@@ -1,0 +1,76 @@
+---
+title: "Pyren Environment Variable Reference"
+sidebarTitle: "Environment Variables"
+description: "Configure Pyren's runtime behavior using environment variables for socket paths, group ownership, log levels, hardware paths, and development fixtures."
+---
+
+Pyren's daemon and CLI tools honor a set of environment variables for overriding default paths and behaviors. These are useful for development workflows, running alongside an installed production daemon, testing in containers, and exercising hardware code paths against fixture directories rather than real hardware. Every tool that reads a socket path or hardware path does so through these variables, so a single export is enough to redirect an entire session.
+
+## Runtime variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PYREN_SOCKET` | `/run/pyren/daemon.sock` (production) · `/tmp/pyren-daemon.sock` (dev fallback) | Unix socket path used by the daemon, `pyren-ctl`, and the app's Tauri shell to communicate. When the daemon runs unprivileged (`cargo run`), it falls back to the `/tmp` path automatically. |
+| `PYREN_SOCKET_GROUP` | `pyren` | Name of the group that owns the socket. The socket is created `0660`, so membership of this group is what grants permission to connect. Override to use an existing group (e.g. `wheel`) without creating `pyren` first. |
+| `PYREN_CONFIG_DIR` | `/etc/pyren` | System config directory for daemon-owned files (`power.json`, `fan.json`). Falls back to `~/.config/pyren` automatically when this path is not writable — see [Config Files](/configuration/config-files). |
+| `PYREN_LOG` | `info` | Log verbosity level. Accepted values: `off`, `error`, `warn`, `info`, `debug`. Controls the `tracing` filter for structured log output. |
+| `PYREN_DRIVER_DIR` | `/usr/share/pyren/driver` | Path to the patched `hp-wmi` kernel driver sources used by the installer module. If you moved driver sources with `install.sh --driver-dir`, point the daemon at the new location here (add it to the service override with `systemctl edit pyren-daemon`). |
+
+<Note>
+`PYREN_LOG` filters logging output only. The startup report (hardware compatibility, socket address, loaded modules) and `--check` output are printed regardless of log level — they are output the user or an operator explicitly asked for. Setting `PYREN_LOG=warn` under systemd still leaves the startup report and any warnings in the journal.
+</Note>
+
+## Development and testing fixture variables
+
+These variables redirect the daemon and `pyren-check` away from real hardware paths and toward fixture directories. Both the Rust daemon and the `tools/pyren-check.sh` shell script honor all of them, and `daemon/check/tests/parity.rs` runs both implementations against the same fixtures to verify they stay in sync.
+
+| Variable | Stands in for |
+|----------|--------------|
+| `PYREN_HWMON_DIR` | The `hp-wmi` hwmon sysfs node (the directory containing `fan1_input`, `pwm1`, `pwm1_enable`, etc.) |
+| `PYREN_USB_DEVICES` | `/sys/bus/usb/devices` — used by the per-key keyboard probe to detect OMEN RGB hardware by USB vendor/product ID |
+| `PYREN_ACPI_CALL` | `/proc/acpi/call` — used by the lightbar probe; pointing this at a plain file lets the lightbar code path be exercised on any machine, even without `acpi_call` loaded |
+| `PYREN_PLATFORM_PROFILE` | `/sys/firmware/acpi/platform_profile` — the firmware power profile selector used by the `power` module |
+| `PYREN_CPU_ROOT` | `/sys/devices/system/cpu` — used by the power module when reading and writing CPU frequency and turbo state |
+| `PYREN_POWERCAP` | `/sys/class/powercap` — used by the power module to read and write RAPL package power limits (PL1/PL2) |
+| `PYREN_TOOLS_DIR` | A directory of external program stubs (`busctl`, `powerprofilesctl`, `tlp`, `auto-cpufreq`, etc.) that the power module runs. When set, every external call is confined to this directory, so a real `tlp` or `auto-cpufreq` on the developer's machine can never answer a test. |
+
+The hermetic power profile test suite (`crates/power/tests/profiles.rs`) uses `PYREN_PLATFORM_PROFILE`, `PYREN_CPU_ROOT`, `PYREN_POWERCAP`, and `PYREN_TOOLS_DIR` together to build a complete fake machine and record every request the module makes, enabling exact assertions without touching real hardware.
+
+## Development override example
+
+```sh
+PYREN_SOCKET=/tmp/pyren-dev.sock \
+PYREN_CONFIG_DIR=/tmp/pyren-dev \
+PYREN_LOG=debug \
+cargo run -p pyren-daemon
+```
+
+Point `pyren-ctl` and the app at the same socket to talk to this dev daemon:
+
+```sh
+PYREN_SOCKET=/tmp/pyren-dev.sock cargo run -q -p pyren-ctl -- status
+```
+
+<Tip>
+Use `PYREN_SOCKET` to run a development daemon alongside an installed production daemon without any conflict. The production daemon owns `/run/pyren/daemon.sock`; give your dev daemon a path under `/tmp` and all tools that read `PYREN_SOCKET` will target it exclusively. This is also how the `osd/` workspace is developed against a local daemon without disturbing the system service.
+</Tip>
+
+## Fixture example for `pyren-check`
+
+To run the compatibility check against synthetic hardware rather than a real HP machine:
+
+```sh
+mkdir -p /tmp/fake/usb/1-2 && cd /tmp/fake
+echo hp > name
+echo 2400 > fan1_input
+echo 2550 > fan2_input
+echo 128 > pwm1
+echo 2 > pwm1_enable
+echo 0d62 > usb/1-2/idVendor
+echo 54bf > usb/1-2/idProduct
+
+PYREN_HWMON_DIR=/tmp/fake PYREN_USB_DEVICES=/tmp/fake/usb \
+  cargo run -p pyren-check -- --write
+```
+
+`PYREN_ACPI_CALL` pointed at a plain file exercises the lightbar path on any machine: the probe writes its ACPI request into the file, reads it back, and because the response is not `PASS`, both the Rust binary and the shell script report the firmware as having refused — giving a deterministic test without loading any kernel module or writing any colour to hardware.

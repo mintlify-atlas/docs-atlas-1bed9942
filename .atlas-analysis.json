@@ -1,0 +1,136 @@
+{
+  "projectType": "saas",
+  "projectName": "Pyren",
+  "projectDescription": "A Linux desktop application that replicates HP's OMEN Gaming Hub, combining a privileged Rust daemon with an unprivileged Tauri + SvelteKit GUI to provide fan control, RGB lighting, power profiles, GPU overclocking, and system monitoring for HP OMEN and Victus laptops.",
+  "theme": "aspen",
+  "primaryColor": "#00ADEF",
+  "lightColor": "#4DC8F5",
+  "darkColor": "#005F8A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "hardware-compatibility"
+            ]
+          },
+          {
+            "group": "Installation",
+            "pages": [
+              "installation/install-from-release",
+              "installation/install-from-source",
+              "installation/uninstall"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/power-profiles",
+              "features/fan-control",
+              "features/rgb-lighting",
+              "features/gpu-overclocking",
+              "features/system-monitor",
+              "features/hotkey-widget"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/config-files",
+              "configuration/environment-variables"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/development-setup",
+              "contributing/testing",
+              "contributing/adding-translations",
+              "contributing/releasing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "IPC Reference",
+        "groups": [
+          {
+            "group": "Protocol",
+            "pages": [
+              "ipc/overview",
+              "ipc/error-kinds",
+              "ipc/events"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "ipc/modules/core",
+              "ipc/modules/system",
+              "ipc/modules/power",
+              "ipc/modules/fan",
+              "ipc/modules/rgb",
+              "ipc/modules/overclock",
+              "ipc/modules/hotkey",
+              "ipc/modules/keymap"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automatic power profile switching (Eco, Balanced, Performance, Unlimited) per power source",
+    "Custom fan control modes: Auto, Max, Manual speed, and user-defined curves",
+    "Keyboard RGB lighting with effects engine (breathing, spectrum, rainbowWave, wave, fade)",
+    "GPU overclocking: core/memory offsets via NVML or nvidia-settings",
+    "Patched hp-wmi kernel driver enabling fan speeds below the firmware's minimum floor",
+    "Quick-access OSD widget (GTK layer-shell) for on-the-fly mode switching",
+    "System monitor: CPU, GPU, RAM, disk, network, temperatures, top processes",
+    "Graphics switching: Integrated, Hybrid, Discrete GPU modes",
+    "External change detection: Fn+P, desktop power managers, other tools",
+    "Privilege-separated architecture: root daemon + unprivileged desktop app via Unix socket IPC",
+    "pyren-ctl CLI client for scripting and daemon control",
+    "pyren-check standalone hardware compatibility checker"
+  ],
+  "publicApiSurface": [
+    "core.capabilities",
+    "core.nextEvent",
+    "system.getInfo",
+    "system.getMetrics",
+    "power.getState",
+    "power.setMode",
+    "power.setAutoConfig",
+    "power.setRestoreOnStart",
+    "power.setTuning",
+    "power.setApplyToOsProfile",
+    "fan.getStatus",
+    "fan.setMode",
+    "fan.diagnose",
+    "rgb.getStatus",
+    "rgb.setConfig",
+    "overclock.getState",
+    "overclock.applyOffsets",
+    "overclock.revert",
+    "hotkey.getStatus",
+    "hotkey.learn",
+    "hotkey.setTriggers",
+    "hotkey.setEnabled",
+    "hotkey.press",
+    "keymap.getStatus",
+    "keymap.setMapping",
+    "keymap.removeMapping",
+    "keymap.setEnabled",
+    "pyren-ctl status",
+    "pyren-ctl power set <mode>",
+    "pyren-ctl power tune",
+    "pyren-ctl fan curve",
+    "pyren-ctl hotkey learn",
+    "pyren-check"
+  ]
+}

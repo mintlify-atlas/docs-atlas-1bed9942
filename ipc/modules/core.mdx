@@ -1,0 +1,101 @@
+---
+title: "core Module: Capabilities and Event Polling"
+sidebarTitle: "core"
+description: "The core module provides core.capabilities to discover loaded modules and core.nextEvent for long-poll event streaming from the Pyren daemon."
+---
+
+The `core` module is a built-in namespace — not a hardware module — that every Pyren daemon exposes unconditionally. It provides exactly two methods: `core.capabilities`, which tells a client which modules are registered and whether their hardware was detected, and `core.nextEvent`, which suspends until the daemon has something to say. Together they are the wiring a UI needs before it can show anything: one call to learn what the machine supports, and a persistent loop to hear about it when that changes.
+
+## Methods
+
+| Method | Params | Result |
+|---|---|---|
+| `core.capabilities` | none | `[{ "id": string, "supported": bool }, ...]` — every registered module and whether its hardware was detected |
+| `core.nextEvent` | `{ "since"?: number, "timeoutMs"?: number }` | `{ "seq", "events": [...], "missed" }` — see below; does not answer until something happens or the timeout elapses |
+
+---
+
+## `core.capabilities`
+
+Returns one entry per registered module with a `supported` flag that reflects whether the module's hardware was present at startup. This is the first call most clients make: its result decides which UI sections to render at all.
+
+```json
+// request
+{ "id": 1, "module": "core", "method": "capabilities", "params": null }
+
+// response
+{ "id": 1, "result": [
+  { "id": "system",  "supported": true  },
+  { "id": "power",   "supported": true  },
+  { "id": "fan",     "supported": false }
+] }
+```
+
+<Note>
+`system` always reports `supported: true` — any Linux machine can report its own vitals. Whether **OMEN hardware control** is possible is a separate question answered by `system.getInfo`'s `compatibility` field and, more precisely, by its `controls` object. Do not gate hardware-specific UI on the `capabilities` `supported` flag alone; gate it on the `controls` fields returned by `system.getInfo`.
+</Note>
+
+---
+
+## `core.nextEvent`
+
+A long-poll that does not reply until at least one event has been queued or the timeout runs out. **The wire framing does not change**: a client still sends one request line and reads one response line; this method simply waits before answering. A client that never calls it never notices it exists, and no existing connection is affected.
+
+### Parameters
+
+| Field | Type | Default | Max | Notes |
+|---|---|---|---|---|
+| `since` | number | — | — | The `seq` from the previous reply. **Omit on the first call** to mean "start from now"; a freshly connected client almost never wants queued events from minutes ago. |
+| `timeoutMs` | number | 25 000 ms | 60 000 ms | How long the daemon will wait before returning an empty `events` array. A timed-out poll is a normal reply, not an error. |
+
+### Result
+
+```json
+{ "id": 4, "module": "core", "method": "nextEvent",
+  "params": { "since": 12, "timeoutMs": 25000 } }
+
+{ "id": 4, "result": {
+  "seq": 14,
+  "missed": 0,
+  "events": [
+    { "seq": 13, "topic": "hotkey.pressed", "ageMs": 4,
+      "payload": { "action": "show", "mode": "balanced" } },
+    { "seq": 14, "topic": "power.mode",     "ageMs": 4,
+      "payload": { "mode": "balanced", "source": "hotkey" } }
+  ]
+} }
+```
+
+| Field | Meaning |
+|---|---|
+| `seq` | The highest sequence number seen so far. Returned whether or not any events fired, so a client that polled with a stale `since` can catch up. |
+| `events` | The events since the previous `seq`. Empty on timeout; never `null`. |
+| `missed` | How many events were dropped because the client fell more than 64 entries behind the daemon's ring buffer. **Non-zero means re-read state** — not replay events — because the gap cannot be reconstructed. |
+
+### Buffer and restart semantics
+
+The daemon keeps 64 events. A `missed` count greater than zero is the honest acknowledgment that the client was too slow, not an error condition. When the daemon restarts it counts `seq` from zero; a `seq` *lower* than the one held is a new daemon — adopt it rather than treating it as stale.
+
+### Event topics
+
+| Topic | Published when | Key payload fields |
+|---|---|---|
+| `hotkey.pressed` | The bound key was pressed | `action` (`"show"`), `mode` — the mode currently in force |
+| `power.mode` | The power mode actually changed, whoever changed it | `mode`, `source` (`request` / `hotkey` / `auto` / `tuning` / `osProfile` / `external`) |
+| `power.overridden` | Another program changed a knob the daemon had set | `knob`, `expected`, `found`, `reverted` |
+| `fan.mode` | A `fan.setMode` took effect, whoever asked | `mode`, `manualPwm`, `source` |
+| `fan.floorRaised` | The stall-watch automatically raised Pyren's fan floor | `fromRpm`, `toRpm`, `stalls`, `reachedDriverFloor` |
+
+<Note>
+An unknown `topic` is not an error. A newer daemon may publish topics this client has never heard of; the correct response is to ignore them. The same principle applies to unknown `error.kind` values in responses.
+</Note>
+
+### The hotkey shows; it does not change
+
+`hotkey.pressed` currently always carries `action: "show"`. The press surfaces the mode picker widget with the current mode highlighted and **changes nothing**. The user picks a mode by clicking in the widget, which is an ordinary `power.setMode` call. Pressing the key again dismisses the widget — the widget's own logic, not the daemon's.
+
+Older daemon versions sent `action: "powerCycle"` with outcome fields (`mode`, `from`, `askedFor`, `changed`, `applied`, `failed`). Clients wanting compatibility with both should branch on `action`, treating an absent field as `"powerCycle"`.
+
+<Note>
+Gate your UI on the `controls` fields from `system.getInfo`, not on the `supported` flag from `core.capabilities`. A machine can have `supported: true` for the `fan` module and still have `controls.fanSpeed: false`, meaning manual speed control is unavailable on that board. See the [system module reference](/ipc/modules/system) for details.
+</Note>

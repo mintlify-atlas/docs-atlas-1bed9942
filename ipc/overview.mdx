@@ -1,0 +1,104 @@
+---
+title: "Pyren IPC Protocol: JSON-RPC over Unix Socket"
+sidebarTitle: "Overview"
+description: "Pyren's daemon communicates via a newline-delimited JSON-RPC-like protocol over a Unix domain socket. One request line, one response line, sequential per connection."
+---
+
+Pyren's privileged daemon and its clients — the Tauri desktop app, `pyren-ctl`, the widget, and any script you write — communicate over a Unix domain socket (`SOCK_STREAM`) using a compact JSON-RPC-like wire format. Every message is a single JSON object terminated by a newline (`\n`). A client sends one request line, reads one response line, and may then send another; the daemon handles requests sequentially on each connection and spawns one thread per connection. No length prefix, no batching, no out-of-order replies: one request in, one response out, always.
+
+## Transport
+
+### Socket path
+
+The socket path is read from the environment variable `$PYREN_SOCKET`. When that variable is absent the daemon falls back to:
+
+- `/tmp/pyren-daemon.sock` — for unprivileged local development (`cargo run`)
+- `/run/pyren/daemon.sock` — in production, where the daemon runs as a root systemd service and sets `PYREN_SOCKET=/run/pyren/daemon.sock`
+
+### Access control
+
+The daemon binds the socket with file mode **`0660`**, owned by the group **`pyren`** (overridable with `PYREN_SOCKET_GROUP`). There is no authentication in the protocol itself: **opening the socket is the authorization**. Members of the `pyren` group and root can connect; no one else can. Where the daemon creates the runtime directory itself, that directory is `0750` and owned by the same group; under systemd the directory is left world-traversable and the socket file inside it is the gate.
+
+If the `pyren` group does not exist at daemon startup, the socket falls back to mode `0600`. The daemon logs a warning in that case, and the app turns the resulting `EACCES` into a user-facing message ("add this user to the 'pyren' group") rather than a bare I/O error.
+
+There is deliberately **no read-only tier** for non-members. Serving read-only status calls to any local process would mean opening a root daemon's socket to everything on the machine — including sandboxed or compromised processes — to save an administrator one `usermod -aG`. The group membership is cheap; the alternative is not.
+
+<Note>
+If you receive `EACCES` when trying to connect, add yourself to the `pyren` group and log out and back in (or run `newgrp pyren` in your current shell):
+
+```sh
+sudo usermod -aG pyren "$USER"
+```
+</Note>
+
+### Framing
+
+Messages are **newline-delimited JSON**: one JSON object per line, `\n`-terminated. A client sends one complete request line, reads one complete response line, then may send another. The daemon never sends unsolicited messages; the only way to receive events is to ask for them via `core.nextEvent` (see [Events](/ipc/events)).
+
+## Request format
+
+```json
+{ "id": 1, "module": "fan", "method": "getStatus", "params": null }
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | number | Caller-assigned integer, echoed back unchanged in the response. Reserved for future out-of-order matching; currently each connection is strictly sequential. |
+| `module` | string | The target module's `id()` — for example `"fan"`, `"power"`, `"rgb"` — or the built-in namespace `"core"`. |
+| `method` | string | The module-specific method name, such as `"getStatus"` or `"setMode"`. |
+| `params` | any \| null | Arbitrary JSON value, module- and method-specific. Omit or pass `null` for no-argument methods. |
+
+## Response format
+
+Every response contains exactly one of `result` or `error` — never both, never neither.
+
+**Success:**
+```json
+{ "id": 1, "result": { "...": "..." } }
+```
+
+**Error:**
+```json
+{ "id": 1, "error": { "kind": "permissionDenied", "message": "writing /sys/.../pwm1_enable needs root: Permission denied (os error 13)" } }
+```
+
+Branch on `kind` to decide what to do; show `message` to the user. See [Error Kinds](/ipc/error-kinds) for the full table and handling guidance.
+
+## Translatable messages (`Msg`)
+
+Any user-facing sentence — an error message, or a prose field in a result such as `detail` or `note` — may arrive as a **`Msg` object** rather than a bare string:
+
+```json
+{
+  "key": "overclock.gpu.nvidia.readable.noLock",
+  "params": { "mhz": 3090 },
+  "text": "Clock offsets are readable. This card's clocks cannot be pinned."
+}
+```
+
+| Field | Description |
+|---|---|
+| `text` | The English wording, already interpolated. **Always present.** Authoritative for any consumer that does not localize — the CLI, `--json` bug reports, the log. |
+| `key` | A stable catalog key. A client that ships a translation catalog renders `key` + `params` in the user's language; a client without the key falls back to `text`. An empty string or absent `key` means "prose only — show `text`". |
+| `params` | The `{name}` substitution values for the translated string; omitted when empty. A joined message carries `params.parts`, a list of `Msg` objects to translate and re-join. |
+
+On an `error` response, `key` and `params` sit beside `kind` and `message` (where `message` is the same string as `text`). Raw operating-system error text — the tail of a failed `exec`, an `io::Error` — is passed through inside a `param` and is **not** translated.
+
+A client that predates this format sees `message`/`text` and loses nothing.
+
+## Example: querying fan status over a raw socket
+
+```python
+import socket, json
+
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect("/tmp/pyren-daemon.sock")
+s.sendall((json.dumps({"id": 1, "module": "fan", "method": "getStatus"}) + "\n").encode())
+print(s.recv(4096).decode())
+```
+
+The daemon replies with a single JSON line containing `"result"` (the fan status object) or `"error"` if something went wrong.
+
+<Warning>
+Never add a method whose safety depends on *which* group member called it. The protocol has no concept of per-caller identity: opening the socket is the entire authorization decision. Every method in this protocol assumes an already-authorized caller, and any security property that requires telling callers apart cannot be enforced here.
+</Warning>

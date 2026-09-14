@@ -1,0 +1,72 @@
+---
+title: "IPC Error Kinds: Handling Daemon Refusals in Pyren"
+sidebarTitle: "Error Kinds"
+description: "Pyren's daemon returns structured errors with a kind field. Branch on kind, show message. Covers unknownModule, unsupported, notCapable, permissionDenied, io, busy, and more."
+---
+
+When the daemon refuses a request it returns an `error` object with a `kind` field drawn from a closed set of named values. **Branch on `kind` to decide what to do; show `message` to the user.** The `message` text is written for a person and gets reworded between releases — anything that pattern-matches on the prose will break the next time someone improves a sentence. `kind` is the stable contract.
+
+<Warning>
+Never match on `message` prose. Message text may be reworded at any time. Only `kind` is guaranteed stable across daemon versions.
+</Warning>
+
+## Error kinds reference
+
+| `kind` | What it means | What a caller should do |
+|---|---|---|
+| `unknownModule` | No module with that id is loaded. | Fix the call — the module name is wrong. |
+| `unknownMethod` | The module is present but the method is not. | Fix the call — the method name is wrong. |
+| `unsupported` | This module's hardware is absent on this machine. | Hide the feature entirely. |
+| `notCapable` | The hardware is present but cannot do this particular thing. | Hide **this specific control**, not the whole feature. |
+| `invalidParams` | The caller sent something the daemon cannot use. | Fix the call. No privilege change makes it work. |
+| `permissionDenied` | The daemon is running unprivileged and the operation requires root. | Offer to restart the daemon as root. |
+| `io` | The machine refused while the work was actually being done (a sysfs write failed, an ACPI call returned an error, etc.). | Show the message. |
+| `busy` | Something else has the hardware right now. | Wait and try again. |
+| `internal` | The daemon could not serialize its own reply — this is a daemon bug. | Show the message; file a bug report. |
+| `failed` | A genuine runtime failure that is none of the above. | Show the message. |
+| `malformedRequest` | What arrived at the daemon was not a recognizable request. The response carries `id: 0`. | This is a bug in the client. |
+
+## Why `notCapable` and `permissionDenied` are different kinds
+
+Three of these kinds are the reason the field exists at all, because `fan.setMode` can return all three and they used to be indistinguishable prose. Consider a call that tries to set a manual fan speed:
+
+- **`notCapable`** — board `8D2F` has no `pwm1`, so `manual` mode will never work there, however it is asked, however many times, running as whatever user. **Do not offer to elevate.**
+- **`permissionDenied`** — the very same call would succeed against a root daemon. The hardware is fine; the daemon just lacks root.
+- **`invalidParams`** — `pwm` was `300`, which is outside the 0–255 range. Neither a privilege change nor different hardware makes this work.
+
+Conflating the first two is the specific mistake this design prevents. A UI that offers "run as administrator" for hardware that will never comply is misleading. A UI that reports working hardware as unsupported because the daemon lacked root is also wrong. Keeping the kinds distinct makes both mistakes impossible to make by accident.
+
+## Unknown kinds
+
+A newer daemon may introduce a `kind` value this client has never seen. **Treat any unknown `kind` as `failed` and show the `message`.** Refusing to parse a refusal is worse than displaying it — it would silently turn a daemon rejection into an apparent success.
+
+For the same reason, a client should still accept a bare-string `error` field (from a daemon predating this format) rather than reading an unparseable error as absent, which would convert a refusal into a silent success.
+
+## Translatable error messages
+
+An error object may carry `key` and `params` beside `kind` and `message`, using the same `Msg` structure described in the [protocol overview](/ipc/overview#translatable-messages-msg). The `message` field is always the English text. A client with a translation catalog renders `key` + `params` in the user's language; a client without the key shows `message` and loses nothing.
+
+```json
+{
+  "id": 1,
+  "error": {
+    "kind": "notCapable",
+    "message": "Clock offsets can be set. This card's clocks cannot be pinned.",
+    "key": "overclock.gpu.nvidia.settable.noLock",
+    "params": {}
+  }
+}
+```
+
+## Exit codes for `pyren-ctl`
+
+`pyren-ctl` maps daemon error kinds to shell exit codes so scripts can branch without parsing English sentences:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success. |
+| `2` | Fix the command (`unknownModule`, `unknownMethod`, `invalidParams`). |
+| `3` | Cannot reach the daemon (socket not found, connection refused). |
+| `4` | This machine will not do it (`unsupported`, `notCapable`, `io`, `failed`). |
+| `5` | The daemon needs root (`permissionDenied`). |
+| `6` | Hardware is busy — wait and retry (`busy`). |

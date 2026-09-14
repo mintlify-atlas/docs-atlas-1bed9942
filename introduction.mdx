@@ -1,0 +1,113 @@
+---
+title: "Pyren: HP OMEN Gaming Hub for Linux"
+sidebarTitle: "Introduction"
+description: "Pyren is an open-source Linux app replicating HP's OMEN Gaming Hub, with fan control, RGB lighting, power profiles, and GPU overclocking via a privilege-separated daemon architecture."
+---
+
+Pyren is an open-source Linux desktop application that brings the HP OMEN Gaming Hub experience to Linux. HP's official OMEN Gaming Hub is a Windows-only application — Pyren fills that gap by delivering the same hardware controls, from fan management and RGB lighting to power profiles and GPU overclocking, through a native Linux app built on Tauri and SvelteKit. The project was derived from [`omen-fan-control`](https://github.com/arfelious/omen-fan-control) (patched Linux driver, reverse ventilation logic) and [`omen-rgb-linux`](https://github.com/arfelious/omen-rgb-linux) for RGB control, then extended with a full desktop UI and daemon architecture.
+
+## Architecture
+
+Pyren is split across four distinct components that each run with exactly the privilege they need:
+
+- **`pyren-daemon`** — a privileged Rust daemon that runs as a systemd service (root). It owns every hardware write: fan PWM, RGB zones, power profiles, GPU offsets, and the kernel driver installer. Each hardware surface is its own Rust crate behind a common `pyren_core::Module` trait, statically linked into one binary.
+- **`pyren`** — an unprivileged Tauri + SvelteKit desktop app. It connects to the daemon over a Unix domain socket and never runs as root; all hardware access goes through that boundary.
+- **`pyren-osd`** — an on-screen display widget (GTK 4 + layer-shell) that can be triggered via a keyboard shortcut for fast switching between performance profiles and fan modes without opening the main app.
+- **`pyren-ctl`** / **`pyren-check`** — command-line tools. `pyren-ctl` sends commands to a running daemon and displays its status; `pyren-check` is a standalone compatibility probe you can run on any machine.
+
+```
+┌─────────────────────────┐
+│   pyren-daemon (root)   │  systemd service
+│  ┌────────┐ ┌───────┐   │
+│  │ power  │ │  fan  │ … │  one crate per hardware surface
+│  └────────┘ └───────┘   │
+└────────────▲────────────┘
+             │ Unix domain socket  (0660, pyren group)
+┌────────────┴────────────┐
+│   pyren  (user)          │
+│   src-tauri socket client│
+│   SvelteKit UI           │
+└─────────────────────────┘
+```
+
+The Unix socket is the trust boundary. The daemon binds it `0660` to the `pyren` group, so membership in that group is the only gate — day-to-day calls never prompt for a password. This design keeps privileged code in one auditable place instead of scattered `pkexec` calls throughout the UI.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Fan Control" icon="wind">
+    Four modes: **Auto** (firmware curve), **Max** (full speed), **Manual** (fixed %), and **Curve** (custom temperature → speed mapping). Each power profile keeps its own fan curve. Includes a lower-minimum calibration and a fan-cleaning mode that spins fans in reverse.
+  </Card>
+  <Card title="Power Profiles" icon="bolt">
+    Four profiles: Eco, Balanced, Performance, and Unlimited. Each moves both the firmware ACPI profile and the OS profile simultaneously. Automatic switching reacts to power source, load, heat, and battery level.
+  </Card>
+  <Card title="RGB Lighting" icon="lightbulb">
+    Full keyboard RGB control with a lighting-effects engine (breathing, spectrum, rainbowWave, wave, fade), power-on/off colour sweeps, brightness control, and up to 15 saved lighting configurations.
+  </Card>
+  <Card title="GPU Overclocking" icon="microchip">
+    Memory and core clock offsets applied via NVML (works on Wayland, no Coolbits required). Changes are stepped in 15 MHz increments and automatically reverted if not confirmed, with a watchdog that also catches driver-reported faults.
+  </Card>
+  <Card title="System Monitor" icon="chart-line">
+    Temperatures (CPU, GPUs, chassis), usage %, RAM, disk, network, and top processes. An advanced mode adds per-core CPU/GPU monitoring with small graphs for each metric.
+  </Card>
+  <Card title="OSD Hotkey Widget" icon="keyboard">
+    A quick-access widget triggered by a keyboard shortcut for fast profile switching and fan mode changes — without opening the full app.
+  </Card>
+  <Card title="Graphics Switching" icon="display">
+    Toggle between Integrated only (iGPU), Hybrid (iGPU ↔ dGPU), and Discrete (dGPU only) graphics modes.
+  </Card>
+  <Card title="Key Remapper & Network Booster" icon="sliders">
+    Create macros and reassign keys with the key remapper. The network booster controls traffic shaping (Disable / Automatic).
+  </Card>
+</CardGroup>
+
+### Additional app features
+
+- **Automatic power switching** — configurable preferred modes for battery and mains, with dead-band hysteresis to prevent flapping
+- **OS power manager support** — speaks power-profiles-daemon, TLP (1.8+), and auto-cpufreq without activating any manager the user did not choose
+- **External change detection** — notices when Fn+P or another power manager changes the profile outside Pyren
+- **Power tuning** — custom PL1/PL2 power limits and turbo on/off for Performance and Unlimited profiles
+- **Safe kernel driver installer** — installs the patched `hp-wmi` module from within the app or via `pyren-ctl`, with automatic or manual modes
+- **Notification centre** — tracks daemon events (e.g. automatic fan-floor corrections) with history in the app and live OS notifications
+- **UI themes** — Dark, Light, Dracula, Tokyo Night, Zero Two, Doki: Essex, Cobalt2, Ayu
+- **Language manager** via `i18next`
+
+## Supported Hardware
+
+<Note>
+  Pyren does not maintain a fixed allowlist of laptop board IDs. Instead, it probes your specific machine at runtime to discover what it can actually control. If a feature isn't available on your board, Pyren reports it clearly rather than silently failing.
+</Note>
+
+Pyren targets **HP OMEN and Victus laptops** running Linux. Compatibility is measured at runtime — `pyren-check` reports exactly which controls (fan speed, power profiles, RGB lightbar) your machine supports before you install anything. If something isn't recognised, opening an issue may reveal a fix.
+
+The patched `hp-wmi` driver that Pyren can install is based on the upstream Linux driver with unofficial modifications to resolve board compatibility issues not present in the stock version. Future releases will offer a choice between the official driver and the Pyren patched version.
+
+<Warning>
+  The patched `hp-wmi` driver may behave differently on boards that were not tested during development. Run `pyren-check` first and review the output before installing the driver on unfamiliar hardware.
+</Warning>
+
+## Licensing
+
+Pyren is licensed under the **GNU General Public License v3 or later (GPL-3.0-or-later)**. See [`LICENSE`](https://github.com/mglourido/PYREN/blob/main/LICENSE).
+
+Two notable exceptions are recorded in [`NOTICE`](https://github.com/mglourido/PYREN/blob/main/NOTICE):
+
+- `driver/` is a verbatim copy of the Linux `hp-wmi` kernel module under **GPL-2.0-or-later**. It retains its own headers and copyright and is not relicensed. GPL-2.0-or-later is compatible with GPL-3.0, so the combined distribution is valid.
+- The fan and RGB modules were written from the observed behaviour of the upstream projects credited in `NOTICE`; no upstream code was copied.
+
+## Navigation
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install Pyren from a release tarball, add yourself to the pyren group, and launch the app in under 5 minutes.
+  </Card>
+  <Card title="Hardware Compatibility" icon="laptop" href="/hardware-compatibility">
+    Run pyren-check to discover which features your HP OMEN or Victus laptop supports before and after install.
+  </Card>
+  <Card title="Features" icon="star" href="/features">
+    Detailed breakdown of every hardware control, app capability, and configuration option.
+  </Card>
+  <Card title="IPC Reference" icon="code" href="/ipc/overview">
+    Unix socket protocol, JSON-RPC message format, and the full command reference for daemon communication.
+  </Card>
+</CardGroup>

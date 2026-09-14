@@ -1,0 +1,69 @@
+---
+title: "Quick-Access OSD Widget and Hotkey in Pyren"
+sidebarTitle: "OSD Widget"
+description: "Pyren's GTK layer-shell overlay widget lets you switch power profiles and fan modes instantly with a configurable keyboard shortcut, without opening the main app."
+---
+
+Pyren's OSD widget (`pyren-osd`) is a GTK layer-shell overlay that floats above every other window and shows the current power profile. You press your chosen keyboard shortcut to bring it up, click a profile to switch, and press the shortcut again to dismiss it — all without opening the main application. The daemon's supervisor continues making automatic-switching decisions at all times; the widget is simply a fast path for manual overrides.
+
+<Note>
+**Nothing is bound by default.** The daemon never guesses which physical key is the OMEN key, and no shortcut is pre-configured. You run `pyren-ctl hotkey learn` to bind a key before the widget responds to any input.
+</Note>
+
+## Hotkey setup
+
+The daemon reads `/dev/input` directly for hotkey events, which means the shortcut works on Hyprland, GNOME, KDE, X11, and any other compositor or desktop without special integration.
+
+```sh
+# Enter learning mode — press your chosen key while the daemon waits
+pyren-ctl hotkey learn
+
+# Confirm what was caught
+pyren-ctl hotkey get
+```
+
+Once learned, the binding persists across daemon restarts. The daemon's repeat guard (`repeatGuardMs`) coalesces the press and release scancodes that many vendor keys emit as a single keypress, so the widget does not flicker open and closed on a single physical key press.
+
+<Tip>
+Use `pyren-ctl hotkey press` to simulate a hotkey press from the terminal. This is the easiest way to test the widget's appearance and behavior without needing to press the physical key.
+</Tip>
+
+## Widget behavior
+
+<Steps>
+
+### Press the hotkey
+
+The widget appears as a GTK layer-shell overlay with the current power profile highlighted. No mode change happens at this point — the press is a **show** event, not a switch.
+
+### Click a mode
+
+Clicking Eco, Balanced, Performance, or Unlimited sends an ordinary `power.setMode` request to the daemon, identical to one from the main application. The mode changes and the widget updates to reflect it.
+
+### Press again to dismiss
+
+Pressing the hotkey a second time closes the widget. This is the widget's own behavior — the daemon publishes the same event either way.
+
+</Steps>
+
+## Fan control in the widget
+
+Fan modes are hidden in the widget by default. To enable them, go to **Settings → Widget → Fan control modes in the widget**.
+
+When enabled, the widget shows **Auto**, **Max**, **Manual**, and **Curve** buttons below the power profile row. Manual mode shows a speed slider. The curve itself is still edited in the main application — the widget only lets you activate the saved curve at its current shape.
+
+## Running as a user service
+
+The widget ships with a systemd user service unit. Install it once and it will launch automatically at login:
+
+```sh
+systemctl --user enable --now pyren-osd.service
+```
+
+The widget process (`pyren-osd`) connects to the daemon over the Unix socket and subscribes to events with `core.nextEvent`. It wakes in the tens of milliseconds a person notices a hotkey press — the long-poll design means it does not need to poll repeatedly.
+
+## Key remapper
+
+Pyren includes a `keymap` module that remaps physical keys system-wide via `/dev/uinput`. This is independent of the OSD hotkey binding — it covers use cases like reassigning keys to different keycodes or creating macros.
+
+Enable the key remapper in **Settings** after configuring your mappings. The remapper is a separate module from the hotkey listener and does not interfere with the widget shortcut.
